@@ -34,3 +34,7 @@ Thumbs.db
 *.log
 *.bak
 *.bak.*
+
+# pubspec.lock 含本机 pub 镜像 URL（127.0.0.1 代理），跨环境无意义；
+# 交给各环境自行 pub get 解析。
+pubspec.lock
