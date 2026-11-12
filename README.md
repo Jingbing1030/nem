@@ -263,6 +263,33 @@ super_clipboard -> super_native_extensions -> device_info_plus -> win32 <6.0.0
 构建器 + 轻量高亮，或 `re_highlight`（`>=2.17.0 <4.0.0`，活跃）。
 这是**第三个需要调整的选型**，属「明确不兼容」情形。
 
+### 4.9 依赖冲突四：`package_info_plus` 10.x 与 `super_clipboard`（又是 `win32`）
+
+实现「检查 GitHub Release 自动提示更新」时需要读当前版本号。
+`package_info_plus` 最新版是 **10.2.2**，但它要求 `win32 ^6.0.0`：
+
+```
+package_info_plus 10.x -> win32 ^6.0.1
+super_clipboard -> super_native_extensions -> device_info_plus (<12.0.0)
+  -> win32 <6.0.0
+```
+
+与 4.4 / 4.5 完全同源 —— 第四个被 `win32` 卡住的包。
+
+**结论**：约束在 `>=9.0.0 <10.0.0`（实解析 **9.0.1**）。
+9.0.1 依赖 `win32 ^5.5.3`，与当前锁定的 `win32 5.15.0` 相容，
+且 `PackageInfo.fromPlatform()` 的 `version` 字段 API 未变。
+本次 `pub get` 后 `win32` **仍停在 5.15.0**，未发生任何既有依赖的漂移。
+
+同批加入的另两个依赖没有冲突：
+`http`（原本已经是 `web_socket_channel` 带入的传递依赖，这里只是提为直接依赖）、
+`url_launcher ^6.3.2`（其 `url_launcher_windows` 已不再依赖 `win32`）。
+
+> ⚠️ 附带确认：`url_launcher` 用 `LaunchMode.externalApplication` 时，
+> Android 侧 `requireNonBrowser = false`，`:app` 模块**不需要**在
+> `<queries>` 里声明 `ACTION_VIEW`（Android 11+ 的包可见性限制不影响它）。
+> 已核对 `url_launcher_android 6.3.33` 的 `UrlLauncher.java` 默认实现。
+
 ---
 
 ## 5. 已完成的测试覆盖

@@ -1,9 +1,19 @@
 name: Build APK
 
+# ── 触发条件 ────────────────────────────────────────────────────────
+# 1) push 到 main      → 只跑「核心包测试 + debug 构建」（不发 Release，避免刷屏）
+# 2) workflow_dispatch → 手动触发；默认「构建 release + 发 GitHub Release」
+# 3) push tag v*       → 构建 release 并把 APK 挂到该 tag 的 Release
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:      # 支持手动触发
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: '构建 release APK 并创建 GitHub Release'
+        type: boolean
+        default: true
 
 jobs:
   # ── 质量门禁：纯 Dart 核心包测试（快，~1 分钟）──────────────────
@@ -30,18 +40,23 @@ jobs:
         working-directory: packages/notepad_core
         run: dart test --reporter expanded
 
-  # ── 构建 APK ──────────────────────────────────────────────────
+  # ── 构建 debug APK（保持原有行为，只在非 tag 推送时跑）──────────
   build-apk:
     name: 构建 debug APK
     runs-on: ubuntu-latest
     needs: core-tests          # 核心包测试通过才构建
+    # tag 推送时只发 release，不必再跑一遍 debug（省 ~10 分钟）
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'    # AGP 9.3.1 需要 JDK 17+
+          # ⚠️ debug 保持 JDK 17：这是 run #7 已验证通过的组合（AGP 9.3.1 要求 17+）。
+          # release 必须用 21（见 build-release job 里 lint 的说明），两者刻意不统一，
+          # 以免动到已经全绿的 debug 链路。
+          java-version: '17'
 
       - uses: subosito/flutter-action@v2
         with:
@@ -98,6 +113,207 @@ jobs:
           name: lan-notepad-debug-apk
           path: app/build/app/outputs/flutter-apk/app-debug.apk
           retention-days: 30
+
+  # ── 构建 release APK 并发布 GitHub Release ────────────────────────
+  #
+  # 只在「手动触发」或「推 v* tag」时运行 —— 不随 main 的每次 push 发版。
+  #
+  # ⚠️ 两个 release 独有的坑（debug 不会遇到，均已在本机实测复现）：
+  #
+  #   坑 A：lint 需要 JDK 21
+  #     assembleRelease 会注册 :<lib>:lintVitalAnalyzeRelease，而 AGP 9.3.1 的
+  #     lint（CommentDetector → JavaDocParser.parseDataItem）调用了
+  #     `java.util.List.removeLast()` —— 这是 **JDK 21** 才加入的
+  #     SequencedCollection API。JDK 17 下抛 NoSuchMethodError：
+  #       Execution failed for task ':image_picker_android:lintVitalAnalyzeRelease'
+  #       > Message: 'java.lang.Object java.util.List.removeLast()'
+  #     → 所以本 job 必须用 JDK 21（AGP 自身的 bug，只能迁就）。
+  #     （debug 构建不注册 lintVital，所以一直没暴露。）
+  #
+  #   坑 B：Kotlin/Java jvmTarget 不一致
+  #     换到 JDK 21 后，Kotlin 插件对「未显式指定 jvmTarget」的插件会跟随 JDK 得到 21，
+  #     而 Java 侧由插件自己的 compileOptions 固定 17，于是：
+  #       Inconsistent JVM-target compatibility detected for tasks
+  #       'compileReleaseJavaWithKotlin' (21) and 'compileReleaseJavaWithJavac' (17)
+  #     根因是 file_picker 11.0.3 的 kotlinOptions 写在 `if (!isAgp9OrAbove) { }` 里，
+  #     AGP 9 下被跳过（与第一轮的 KGP 问题同源）。
+  #     → 解法在 app/android/build.gradle.kts 里（统一那几个插件的 jvmTarget=17），
+  #       属于仓库代码，本 workflow 不需要重复处理。
+  #
+  # 签名说明：release 的 signingConfig 见 app/android/app/build.gradle.kts。
+  #   若 CI 上配置了 ANDROID_KEYSTORE_BASE64 等 Secrets，则用正式 keystore 签名；
+  #   否则回落到 Android Debug 证书（能构建/能安装/能分发，但**每次新建的
+  #   debug keystore 都是随机的**，跨 release 签名不一致 → 无法覆盖安装）。
+  build-release:
+    name: 构建 release APK 并发布
+    runs-on: ubuntu-latest
+    needs: core-tests
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+    permissions:
+      contents: write        # ← 必需：否则 GITHUB_TOKEN 无法创建 Release
+    env:
+      # 签名 Secrets（可选）。未配置时为空字符串 → 走 debug 证书回落分支。
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'   # ← 见上方「坑 A」，必须是 21
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.50.0'
+          channel: stable
+          cache: true
+
+      - name: 显示版本
+        run: |
+          flutter --version
+          java -version
+
+      - name: 安装依赖（monorepo：先核心包，再 app）
+        run: |
+          cd packages/notepad_core && flutter pub get
+          cd ../../app && flutter pub get
+
+      - name: 修补 cargokit（Gradle 9 移除 Project.exec）
+        run: python3 .github/scripts/patch-cargokit.py
+
+      # ── 从 pubspec.yaml 提取版本号（tag 不带 +build 段）──────────────
+      # version: 0.2.1+2  →  VERSION=0.2.1  TAG=v0.2.1
+      #
+      # 用 step outputs 而不是 GITHUB_ENV：`${{ env.X }}` 在 softprops 的 `with:`
+      # 里属于**表达式上下文**，其求值时机早于 step 运行期写入的 GITHUB_ENV，
+      # 容易拿到空值。outputs 是官方保证跨 step 可用的方式。
+      - name: 解析版本号
+        id: ver
+        run: |
+          set -euo pipefail
+          RAW=$(grep -E '^version:' app/pubspec.yaml | head -1 | sed -E 's/^version:[[:space:]]*//' | tr -d '[:space:]')
+          VERSION="${RAW%%+*}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::无法从 app/pubspec.yaml 解析出版本号（读到 '$RAW'）"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION"     >> "$GITHUB_OUTPUT"
+          echo "解析结果：version=$VERSION  tag=v$VERSION（pubspec 原文 '$RAW'）"
+
+      # tag 推送时校验 tag 与 pubspec 版本一致，避免发出「标签与内容不符」的 Release
+      - name: 校验 tag 与 pubspec 版本一致
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        env:
+          EXPECTED_TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_NAME}" != "${EXPECTED_TAG}" ]; then
+            echo "::error::tag '${GITHUB_REF_NAME}' 与 pubspec 版本 '${EXPECTED_TAG}' 不一致；请先同步 app/pubspec.yaml 的 version。"
+            exit 1
+          fi
+          echo "tag 校验通过：${GITHUB_REF_NAME}"
+
+      # ── 可选：解码正式签名密钥 ───────────────────────────────────────
+      # 未配置 Secrets 时整步跳过，release 回落到 debug 证书（见 build.gradle.kts）。
+      - name: 解码签名密钥（仅当配置了 Secrets）
+        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          set -euo pipefail
+          # 四个 Secrets 必须齐全，否则宁可明确失败，也不要产出「以为签了其实没签」的 APK
+          for v in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_PASSWORD ANDROID_KEY_ALIAS; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::已配置 ANDROID_KEYSTORE_BASE64，但 $v 为空。签名 Secrets 必须四个一起配。"
+              exit 1
+            fi
+          done
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > app/android/release.jks
+          # storeFile 用相对 android/ 的路径：build.gradle.kts 里会按 rootProject 解析，
+          # 不依赖 runner 的绝对工作目录。
+          cat > app/android/key.properties <<'EOF'
+          storeFile=release.jks
+          storePassword=__STORE_PASSWORD__
+          keyAlias=__KEY_ALIAS__
+          keyPassword=__KEY_PASSWORD__
+          EOF
+          # 用占位符再替换，避免口令里的特殊字符破坏 heredoc
+          python3 - <<'PY'
+          import os, pathlib
+          p = pathlib.Path("app/android/key.properties")
+          s = p.read_text()
+          s = s.replace("__STORE_PASSWORD__", os.environ["ANDROID_KEYSTORE_PASSWORD"])
+          s = s.replace("__KEY_PASSWORD__",   os.environ["ANDROID_KEY_PASSWORD"])
+          s = s.replace("__KEY_ALIAS__",      os.environ["ANDROID_KEY_ALIAS"])
+          p.write_text(s)
+          print("已写入 app/android/key.properties")
+          PY
+          # 只打印证书指纹，绝不打印口令或密钥内容
+          keytool -list -keystore app/android/release.jks \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" | tail -3
+
+      - name: 检查签名密钥是否生效
+        run: |
+          set -euo pipefail
+          if [ -f "$GITHUB_WORKSPACE/app/android/key.properties" ]; then
+            echo "签名方式：正式 keystore（来自 Secrets）"
+          else
+            echo "::warning::未配置签名 Secrets，本次 release 将使用 Android Debug 证书签名。"
+            echo "::warning::⚠️ CI 上自动生成的 debug keystore 每次都是随机的 → 本次 APK 的签名与其它 release 不同，无法覆盖安装。"
+          fi
+
+      - name: 构建 release APK（arm64 单 ABI）
+        run: |
+          cd app
+          flutter build apk --release --target-platform android-arm64
+
+      - name: 产物信息
+        id: apk
+        run: |
+          set -euo pipefail
+          APK=app/build/app/outputs/flutter-apk/app-release.apk
+          ls -lh app/build/app/outputs/flutter-apk/
+          SHA=$(sha256sum "$APK" | awk '{print $1}')
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "release APK sha256 = $SHA"
+          # 记录实际签名证书，便于排查「无法覆盖安装」
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          if [ -n "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --print-certs "$APK" 2>/dev/null \
+              | grep -E "Signer #1 certificate (DN|SHA-256)" || true
+          fi
+
+      - name: 上传 APK（构建产物，供人工核对）
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-notepad-release-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 90
+
+      - name: 发布 GitHub Release
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: 局域网记事本 ${{ steps.ver.outputs.tag }}
+          body: |
+            局域网记事本 **${{ steps.ver.outputs.tag }}**（Android / arm64-v8a）
+
+            ### 下载
+            - `app-release.apk` — 直接下载安装
+            - sha256：`${{ steps.apk.outputs.sha256 }}`
+
+            ### 安装说明
+            1. 手机需允许「安装未知来源应用」。
+            2. 若提示「应用未安装 / 签名不一致」，说明旧版本与本版签名不同，
+               需先卸载旧版再安装（本地数据会被清除，建议先导出笔记）。
+            3. 仅支持 64 位 ARM 设备（arm64-v8a）。
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          generate_release_notes: true
 
   # ── 打包核心包产物（便于核对）────────────────────────────────
   package-core:

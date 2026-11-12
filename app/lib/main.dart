@@ -14,6 +14,7 @@ import 'src/net/sync_service.dart';
 import 'src/providers.dart';
 import 'src/theme/theme_config_provider.dart';
 import 'src/ui/notes_list_page.dart';
+import 'src/update/startup_update_check.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -105,7 +106,9 @@ class LanNotepadApp extends ConsumerWidget {
       title: '局域网记事本',
       debugShowCheckedModeBanner: false,
       theme: buildThemeData(theme),
-      home: const NotesListPage(),
+      // 启动后延迟检查 GitHub Release 并提示更新（可选功能，失败静默、
+      // 不阻塞首屏 —— 详见 src/update/startup_update_check.dart）。
+      home: const StartupUpdateCheck(child: NotesListPage()),
     );
   }
 }

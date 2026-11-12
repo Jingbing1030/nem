@@ -1,7 +1,7 @@
 name: lan_notepad
 description: 局域网记事本 —— Markdown 笔记 + 内容寻址图片 + 局域网加密同步。
 publish_to: none
-version: 0.2.0+1
+version: 0.2.1+2
 
 environment:
   sdk: ^3.14.0
@@ -30,6 +30,17 @@ dependencies:
 
   # 配置存储
   shared_preferences: ^2.5.6
+
+  # 更新检测（查 GitHub Release 并提示，见 lib/src/update/）
+  # http 原本已是传递依赖（web_socket_channel 带入 1.6.0），这里提为直接依赖。
+  http: ^1.6.0
+  # 读当前版本号。
+  # 必须留在 9.x：10.x 要求 win32 ^6.0.0，与 super_clipboard 锁死的
+  # device_info_plus(<12.0.0) → win32 <6.0.0 冲突（同 README 4.4/4.5 的 win32 问题）。
+  # 9.0.1 依赖 win32 ^5.5.3，与当前锁定的 win32 5.15.0 相容。
+  package_info_plus: ">=9.0.0 <10.0.0"
+  # 打开 Release 页面（不依赖 win32，无冲突）。
+  url_launcher: ^6.3.2
 
   # 加密与哈希
   pointycastle: ^4.0.0
