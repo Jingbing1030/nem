@@ -65,6 +65,38 @@ flutter test                 # widget / 集成测试
 flutter build apk --debug    # 或 --release
 ```
 
+> `--release` 在 CI 上**需要 JDK 21**（不是 17）：AGP 9.3.1 的
+> `lintVitalAnalyzeRelease` 会调用 JDK 21 才有的 `List.removeLast()`
+> （`CommentDetector` → `JavaDocParser`），JDK 17 下抛 `NoSuchMethodError`。
+> 这是 AGP 自身的 bug，只能迁就。debug 构建不跑 `lintVital`，所以用 17 也能过。
+
+### 2.3 自动发版（GitHub Actions）
+
+`.github/workflows/build-apk.yml` 有 **3 条路径**：
+
+| 触发 | 行为 |
+|---|---|
+| push 到 `main` | 核心包测试 + **debug** 构建（**不发 Release**，避免刷屏）|
+| push tag `v*` | 核心包测试 + **release** 构建 + **自动创建/更新 GitHub Release** |
+| 手动 `workflow_dispatch` | 同上；`publish_release` 取消勾选则只构建不发 Release |
+
+**发一个正式版的完整流程**（tag 与 `version:` 必须一致，workflow 会校验）：
+
+```bash
+# 1) 改 app/pubspec.yaml 的 version（如 0.2.1+2 → 0.2.2+3）
+# 2) 提交
+git commit -am "发布 v0.2.2"
+git push origin main
+# 3) 打 tag 并推送 —— 这一步就会触发 release 构建 + 发 Release
+git tag v0.2.2 && git push origin v0.2.2
+```
+
+tag 里的版本**不带 `+build` 段**（`0.2.1+2` → tag `v0.2.1`），这个映射由
+workflow 从 `pubspec.yaml` 自动推导，无需手工同步。
+
+> **签名**：默认回落到 Android Debug 证书，**各次 CI 运行签名不同、无法覆盖安装**；
+> 要能持续升级必须先配 4 个 Secrets —— 详见 [§7.9 发行版签名与覆盖安装](#79-发行版签名与覆盖安装)。
+
 ---
 
 ## 3. ⚠️ 本项目的开发环境限制（重要，请先读）
@@ -402,6 +434,62 @@ cd packages/notepad_core && dart test
 - 「从备份恢复」会在**同进程内**重开数据库（不需要用户手动杀进程），
   并在恢复前把当前库另存为 `notes.db.before-restore`；
 - 恢复后建议自行确认数据完整（界面会提示完整性检查结果）。
+
+### 7.9 发行版签名与覆盖安装
+
+CI（`.github/workflows/build-apk.yml`）有两种签名模式，由
+`app/android/build.gradle.kts` 自动选择：
+
+| 模式 | 触发条件 | 后果 |
+|---|---|---|
+| **正式签名** | 配好 4 个 Secrets（见下） | ✅ 各版本签名一致，**可覆盖安装** |
+| **Debug 证书回落** | 未配 Secrets | ⚠️ **CI 上每次运行签名都不同 → 无法覆盖安装** |
+
+**为什么"CI 上用 debug 签名"会每次都不同（实测结论）**：
+
+`actions/runner-images` 的 runner **没有预置** debug keystore（已核对上游仓库，
+脚本里无任何 keystore / `androiddebugkey` 痕迹），于是 AGP 走
+`ValidateSigningTask.createDefaultDebugKeystoreIfNeeded` →
+`KeystoreHelper.createDebugStore()`，而该函数内部是
+`KeyPairGenerator.generateKeyPair()`（**无 seed**）→ **每次都是新的随机密钥对**。
+
+本项目实测三份 APK 的证书指纹，互不相同：
+
+```
+本机 debug   APK: DC:C5:F4:2A:17:FD:97:D0:66:6A:71:F0:92:17:4D:88:...
+本机 release APK: DC:C5:F4:2A:...（与本机 debug 相同 —— 因为共用本机持久化的
+                                  ~/.android/debug.keystore）
+CI   release APK: 2C:A8:21:5A:4F:6C:42:64:97:BB:FA:18:FC:B5:B3:DD:...  ← 与上面都不同
+```
+
+> 注意：**本机**构建的 debug/release 签名**是稳定**的（`~/.android/debug.keystore`
+> 会持久保存），所以本地测「覆盖安装」会通过，**但在 CI 产物上不成立** ——
+> 这个差异很容易误导排查。
+
+**具体影响**：从 CI 产物升级时，若新旧 APK 来自**不同一次 CI 运行**，
+系统会报「应用未安装 / 签名不一致」，**必须先卸载旧版**（本地数据会被清除，
+建议先导出笔记）。应用内的「检查更新」提示因此只保证**能下载到新版**，
+不保证能直接覆盖安装。
+
+**如何切到正式签名（推荐，一次性配置）**：
+
+在 GitHub 仓库 **Settings → Secrets and variables → Actions → New repository secret**
+添加这 **4 个**（缺一不可，否则 workflow 会明确报错而不是静默跳过）：
+
+| Secret | 说明 |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | keystore 文件的 base64（`base64 -w0 release.jks`） |
+| `ANDROID_KEYSTORE_PASSWORD` | store 口令 |
+| `ANDROID_KEY_PASSWORD` | key 口令 |
+| `ANDROID_KEY_ALIAS` | key 别名 |
+
+配好后无需改任何代码：workflow 会解码 keystore 并写 `app/android/key.properties`，
+`build.gradle.kts` 检测到它就自动切到正式签名（并打印
+`[signing] 使用 key.properties 中的正式签名配置`）。
+
+> **密钥绝不会进仓库**：`.gitignore` 已排除 `*.jks` / `*.keystore` /
+> `app/android/key.properties`；workflow 只打印证书指纹，不打印口令。
+> 公开仓库**不要**把 keystore 放进 Actions Variables（协作者可见，且可能出现在日志里）。
 
 ---
 
