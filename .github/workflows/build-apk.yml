@@ -297,6 +297,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
+          # ⚠️ files 不能省！少了它 Release 会被建出来但**没有任何 asset**
+          #    （run #11 实测踩到：Release 有 body、assets 却是空的）。
+          files: app/build/app/outputs/flutter-apk/app-release.apk
           name: 局域网记事本 ${{ steps.ver.outputs.tag }}
           body: |
             局域网记事本 **${{ steps.ver.outputs.tag }}**（Android / arm64-v8a）
