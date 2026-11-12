@@ -47,10 +47,30 @@ from pathlib import Path
 # Flutter 3.50 的 FlutterExtension.compileSdkVersion 默认值
 TARGET_COMPILE_SDK = 36
 
-EXEC_RE = re.compile(r'(?:project\.)?exec\s*\{')
+# ⚠️ 必须要求 `project.` 前缀：
+#   替换后的代码是 `execOperations.exec { ... }`，若正则里 project. 是可选的，
+#   第二次运行会匹配其中的 `exec {` → 变成 `execOperations.execOperations.exec {`
+#   → 报 "Could not get unknown property 'execOperations'"（CI run #8 实测）。
+EXEC_RE = re.compile(r'project\.exec\s*\{')
 INJECT_DECL = '    @Inject abstract org.gradle.process.ExecOperations getExecOperations()\n'
 CLASS_RE = re.compile(r'(abstract\s+class\s+CargoKitBuildTask\s+extends\s+DefaultTask\s*\{[^\n]*\n)')
 COMPILE_SDK_RE = re.compile(r'compileSdkVersion\s+(\d+)')
+
+
+
+# 已损坏形式（历史 bug 造成）：execOperations.execOperations.exec → execOperations.exec
+# 因为 flutter-action 的 cache:true 会把 patch 过的 pub-cache 存进缓存，
+# 于是下一次运行会在已打补丁的文件上再打一遍。这里做幂等自修复。
+BROKEN_DOUBLE = 'execOperations.execOperations.exec'
+BROKEN_FIXED = 'execOperations.exec'
+
+
+def repair_double_patch(src: str) -> tuple[str, int]:
+    """把历史上被重复 patch 的 `execOperations.execOperations.exec` 修回单层。"""
+    n = src.count(BROKEN_DOUBLE)
+    if n:
+        src = src.replace(BROKEN_DOUBLE, BROKEN_FIXED)
+    return src, n
 
 
 def find_matching_brace(s: str, open_idx: int) -> int:
@@ -69,9 +89,15 @@ def find_matching_brace(s: str, open_idx: int) -> int:
 
 
 def patch_cargokit_gradle(path: Path) -> int:
-    src = path.read_text()
+    original = path.read_text()   # 用于最后判断"文件是否真的变了"
+    src = original
 
-    # 补丁 1a：注入 ExecOperations
+    # 补丁 0：自修复历史遗留的 double-patch
+    src, repaired = repair_double_patch(src)
+    if repaired:
+        print(f'  自修复重复补丁 {repaired} 处：{path}')
+
+    # 补丁 1a：注入 ExecOperations（幂等）
     if 'getExecOperations' not in src:
         m = CLASS_RE.search(src)
         if not m:
@@ -95,7 +121,9 @@ def patch_cargokit_gradle(path: Path) -> int:
         i = end + 1
     new = ''.join(out)
 
-    if new != path.read_text():
+    # 判据必须与**原始内容**比较：自修复时 count 可能为 0，
+    # 此时 new == src（都含修复），若拿 new 和 src 比就永远不写回 —— 那是 bug。
+    if new != original:
         path.write_text(new)
     return count
 
