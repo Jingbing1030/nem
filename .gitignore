@@ -42,3 +42,8 @@ pubspec.lock
 # 构建产物：APK 有 100MB+，绝不能提交进仓库
 *.apk
 *.aab
+
+# Python 字节码缓存（.github/scripts/*.py 被本地调试时会产生，
+# 属于机器生成物，不该进仓库）
+__pycache__/
+*.py[cod]
