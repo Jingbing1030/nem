@@ -1,0 +1,72 @@
+name: lan_notepad
+description: 局域网记事本 —— Markdown 笔记 + 内容寻址图片 + 局域网加密同步。
+publish_to: none
+version: 0.2.0+1
+
+environment:
+  sdk: ^3.14.0
+  flutter: ">=3.50.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 状态管理
+  flutter_riverpod: ^3.5.0
+
+  # 本地数据库：正文 + 元数据 + 同步基线 + FTS 全在同一 SQLite 库（变更 1）
+  drift: ^2.35.4
+  # sqlite3 3.x 通过 Dart hooks 自带原生库，
+  # 因此 sqlite3_flutter_libs 不再需要（官方已标 0.6.0+eol，见 README 4.7）
+  sqlite3: ^3.9.1
+
+  # 文件与路径
+  path_provider: ^2.1.6
+  path: ^1.9.1
+
+  # 安全存储（masterKey）
+  # 必须留在 10.x：11.x 要求 win32 ^6.0.1，与 super_clipboard 冲突（见 README 4.5）
+  flutter_secure_storage: ">=10.3.0 <11.0.0"
+
+  # 配置存储
+  shared_preferences: ^2.5.6
+
+  # 加密与哈希
+  pointycastle: ^4.0.0
+  crypto: ^3.0.8
+
+  # 网络
+  web_socket_channel: ^3.0.3
+  mdns_dart: ^2.2.2
+
+  # Markdown
+  flutter_markdown_plus: ^1.0.12
+  markdown: ^7.3.1
+
+  # 文件与图片
+  # 必须留在 11.x：12.x/13.x 依赖 windows_file_picker → win32 ^6.3.0，
+  # 与 super_clipboard 的 win32 <6.0.0 冲突（见 README 4.8）
+  file_picker: ">=11.0.0 <12.0.0"
+  image_picker: ^1.2.4
+  super_clipboard: ^0.9.1
+  flutter_image_compress: ^2.5.1
+
+  # 杂项
+  uuid: ^4.6.0
+  intl: ^0.20.3
+
+  # 本地核心逻辑包（加密/协议/版本向量/同步）
+  notepad_core:
+    path: ../packages/notepad_core
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  drift_dev: ^2.35.3
+  # 必须避开 build_runner >=2.17.1：它要求 build >=5.0.0，
+  # 且与 drift_dev 的 build 约束区间需有交集（见 README 4.4）
+  build_runner: ">=2.16.0 <2.17.1"
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

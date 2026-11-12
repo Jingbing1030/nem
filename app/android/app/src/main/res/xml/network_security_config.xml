@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  局域网直连使用 ws://（明文 WebSocket 传输的是已加密的信封），
+  因此需要允许明文流量。注意：应用层载荷始终是 AES-GCM 密文，
+  这里放开的是传输层，不代表内容是明文。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

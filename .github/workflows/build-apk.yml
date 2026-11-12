@@ -1,0 +1,106 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:      # 支持手动触发
+
+jobs:
+  # ── 质量门禁：纯 Dart 核心包测试（快，~1 分钟）──────────────────
+  core-tests:
+    name: 核心包测试（纯 Dart）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: 安装依赖
+        working-directory: packages/notepad_core
+        run: dart pub get
+
+      - name: 静态分析（不阻断）
+        working-directory: packages/notepad_core
+        continue-on-error: true
+        run: dart analyze
+
+      - name: 单元测试（加密 / TOTP / 哈希 / 版本向量 / 冲突解决）
+        working-directory: packages/notepad_core
+        run: dart test --reporter expanded
+
+  # ── 构建 APK ──────────────────────────────────────────────────
+  build-apk:
+    name: 构建 debug APK
+    runs-on: ubuntu-latest
+    needs: core-tests          # 核心包测试通过才构建
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'    # AGP 9.3.1 需要 JDK 17+
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.50.0'
+          channel: stable
+          cache: true
+
+      - name: 显示版本
+        run: |
+          flutter --version
+          java -version
+
+      - name: 安装依赖（monorepo：先核心包，再 app）
+        run: |
+          cd packages/notepad_core && flutter pub get
+          cd ../../app && flutter pub get
+
+      - name: 静态分析（不阻断，仅记录）
+        continue-on-error: true
+        run: cd app && flutter analyze
+
+      - name: 构建 APK（arm64 单 ABI，debug）
+        run: |
+          cd app
+          flutter build apk --debug --target-platform android-arm64
+
+      - name: 产物信息
+        run: |
+          ls -lh app/build/app/outputs/flutter-apk/
+          sha256sum app/build/app/outputs/flutter-apk/app-debug.apk
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-notepad-debug-apk
+          path: app/build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 30
+
+  # ── 打包核心包产物（便于核对）────────────────────────────────
+  package-core:
+    name: 核心包测试报告
+    runs-on: ubuntu-latest
+    needs: core-tests
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - name: 生成测试摘要
+        working-directory: packages/notepad_core
+        continue-on-error: true
+        run: |
+          dart pub get
+          dart test --reporter json > /tmp/test-report.json 2>&1 || true
+          echo "测试文件数：$(ls test/*.dart | wc -l)"
+          echo "测试用例数：$(grep -o '"testStart"' /tmp/test-report.json | wc -l)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-test-report
+          path: /tmp/test-report.json
+          retention-days: 7

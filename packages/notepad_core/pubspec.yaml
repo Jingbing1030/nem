@@ -1,0 +1,15 @@
+name: notepad_core
+description: 局域网记事本核心逻辑（加密/协议/同步），纯 Dart 不依赖 Flutter，便于原生跑单测。
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.14.0
+
+dependencies:
+  pointycastle: ^4.0.0
+  crypto: ^3.0.8
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.33.0
