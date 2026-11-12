@@ -230,7 +230,9 @@ auth_ok
    │
    ├─ 图片同步：image_manifest 对比（第一版逻辑不变）
    │
-   └─ patch 失败 / 版本跳变 → 全量降级，用 updatedAt LWW 兜底
+   └─ patch 失败 / 基线不匹配 → 全量降级（重新走全量对比，不是 LWW）
+      注：仅在「版本向量相同但 contentHash 不同」这种理论异常下，
+          才用 updatedAt 做最后排序依据（见 planner.dart 的 '按 updatedAt 兜底' 分支）
 ```
 
 ### 6.4 增量 patch 约束

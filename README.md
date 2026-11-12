@@ -295,6 +295,40 @@ super_clipboard -> super_native_extensions -> device_info_plus -> win32 <6.0.0
 构建器 + 轻量高亮，或 `re_highlight`（`>=2.17.0 <4.0.0`，活跃）。
 这是**第三个需要调整的选型**，属「明确不兼容」情形。
 
+### 4.8 构建期的上游不兼容（Flutter 3.50 + AGP 9 + Gradle 9）
+
+上面 4.3~4.5 是**依赖解析期**的冲突（`pub get` 直接失败）。
+本节是**构建期**的问题 —— `pub get` 能过，但 Gradle 跑到一半才失败。
+两者性质不同，排查方式也不同：**不能只看 `pub get` 是否成功**。
+
+这个版本组合（Flutter 3.50.0 / AGP 9.3.1 / Gradle 9.5.0 / JDK 17+）比较新，
+插件生态尚未跟上，实测遇到 **5 处上游失配**，都需要打补丁或调配置才能构建：
+
+| # | 现象（报错关键行） | 根因 | 解法 |
+| --- | --- | --- | --- |
+| 1 | `cannot find symbol: class FilePickerPlugin` | `file_picker 11.0.3` 用**条件式** apply：`if (!isAgp9OrAbove) apply plugin: 'kotlin.android'`。而 Flutter 的兜底判断靠**正则扫 build 脚本文本**（`FlutterPluginUtils.kt` 的 `kgpRegexGroovy`），**看不懂 `if` 条件** → 误判「已 apply」→ 跳过兜底。结果 AGP 9 下双方都不管 Kotlin，`.kt` 无人编译 | 在根 `build.gradle.kts` 里对 `:file_picker` 用 `plugins.withId("com.android.library")` 显式补一次 KGP apply |
+| 2 | `AAPT: error: resource mipmap/ic_launcher not found` | `res/mipmap-*/ic_launcher.png` 缺失 | 从 Flutter 官方模板补齐 5 个密度 + 启动画面资源 |
+| 3 | `Could not find method exec()` on `project '...'` | **Gradle 9 移除了 `Project.exec()`**（用 `javap` 确认 `Project` 接口里已无该方法），而 cargokit 仍在用 | 用 `@Inject abstract ExecOperations getExecOperations()` 注入，把 `project.exec {}` 换成 `execOperations.exec {}.assertNormalExitValue()`。**注意**：该代码在 `DefaultTask` 子类里，`DefaultTask` **没有 `providers`** 属性，所以不能用 `providers.exec`；且 `assertNormalExitValue()` 不可省（否则构建失败会被静默吞掉） |
+| 4 | `checkDebugAarMetadata`：20 个 androidx 依赖要求 `compileSdk >= 34` | `irondash_engine_context 0.5.5` / `super_native_extensions 0.9.1`（cargokit 家族）的 `android/build.gradle` **硬编码 `compileSdkVersion 31`** | 补丁把这两处抬到 36（Flutter 3.50 的默认值）。只改编译期 API 级别，不动 `minSdk`/`targetSdk` |
+| 5 | `NoSuchMethodError: java.util.List.removeLast()`（**仅 release 构建**） | AGP 9.3.1 的 `lintVitalRelease`（`CommentDetector`）调用了 **JDK 21 才有的** `SequencedCollection` API，JDK 17 下不存在 | **构建 release 需要 JDK 21**。注意 `lintVital` **只在 release 跑**，所以 debug 用 JDK 17 全绿也发现不了这个问题 |
+
+**关于第 5 条的一个连带坑**：换成 JDK 21 后会暴露
+
+```
+Inconsistent JVM-target compatibility detected for tasks
+  'compileReleaseJavaWithJavac' (17) and 'compileReleaseKotlin' (21)
+```
+
+因为 Kotlin 插件在未显式指定 `jvmTarget` 时会**跟随 JDK 版本**，
+而各插件 `compileOptions` 固定为 17。其中 `file_picker` 的 `kotlinOptions { jvmTarget = 17 }`
+又写在 `if (!isAgp9OrAbove) {}` 里（**与第 1 条同源**），AGP 9 下被跳过。
+→ 解法是在根 `build.gradle.kts` 里对这些插件统一 `compilerOptions.jvmTarget = JVM_17`
+（用 `plugins.withId` 保证时序；**不能用已废弃的 `kotlinOptions`**，Kotlin 2.x 下会编译报错）。
+
+**结论**：在这个版本组合下，**不要期待插件生态即插即用**。
+`app/android/build.gradle.kts` 与 `.github/scripts/patch-cargokit.py` 里的补丁
+就是为此存在的 —— 若将来上游适配了，可逐条删除。
+
 ### 4.9 依赖冲突四：`package_info_plus` 10.x 与 `super_clipboard`（又是 `win32`）
 
 实现「检查 GitHub Release 自动提示更新」时需要读当前版本号。
@@ -326,25 +360,51 @@ super_clipboard -> super_native_extensions -> device_info_plus (<12.0.0)
 
 ## 5. 已完成的测试覆盖
 
-`packages/notepad_core/test/`：
+**实测数字（2026-11-13 重跑）**：
+
+| 测试集 | 文件数 | 用例数 | 命令 |
+| --- | --- | --- | --- |
+| 核心包（纯 Dart，不依赖 Flutter） | 14 | **288** | `cd packages/notepad_core && dart test` |
+| App 层（需 Flutter） | 13 | **326** | `cd app && flutter test` |
+
+核心包不依赖 Flutter，单测**几秒跑完** —— 改动加解密/协议/同步算法后，这是最划算的验证手段。
+
+### 5.1 `packages/notepad_core/test/`
 
 | 文件 | 覆盖内容 |
 | --- | --- |
 | `aes_gcm_test.dart` | 加解密往返（含空载荷、1MB）、IV/tag 长度、IV 随机性、**篡改检测（密文/tag/nonce 各翻转一位）**、错误密钥、AAD 认证、参数校验 |
-| `totp_test.dart` | **RFC 4226 / RFC 6238 官方测试向量**、±1 窗口（±30s 通过、±60s 拒绝）、步长刷新、倒计时、错误码拒绝 |
-| `kdf_test.dart` | PBKDF2 确定性与参数敏感性、协议固定参数断言、masterKey 生成（长度/字符集/随机性）、域分离 |
-| `hashing_test.dart` | SHA-256/SHA-1 官方向量、内容相同哈希相同（去重依据）、文件流式哈希、HMAC-SHA1 |
+| `totp_test.dart` | **RFC 4226 / RFC 6238 官方测试向量**、±1 窗口（±30s 通过、±60s 拒绝）、步长刷新、倒计时 |
+| `kdf_test.dart` | PBKDF2 确定性与参数敏感性、协议固定参数断言、masterKey 生成（长度/字符集/随机性）、**域分离**（pair/session/totp 三种盐不同） |
+| `hashing_test.dart` | SHA-256 / SHA-1 官方向量、内容相同哈希相同（图片去重依据）、文件流式哈希、HMAC-SHA1、**恒定时间比较** |
 | `envelope_test.dart` | 信封编解码与字段名、明文不含敏感内容、**重放拒绝**、nonce 缓存容量与淘汰、篡改消息不污染缓存 |
-| `sync_planner_test.dart` | **LWW（updatedAt 大者胜）**、双向对称性、删除传播与删除冲突收敛、多笔记整体规划、图片缺失计算 |
+| `pairing_test.dart` | **HMAC 配对**（变更 2）：载荷无明文码、错误码拒绝且不泄露「接近了」、±1 时间窗、重放拒绝、恒定时间比较 |
+| `version_vector_test.dart` | **equal / dominates / dominated / concurrent 四态**、序列化往返、merge 语义 |
+| `sync_planner_test.dart` | 版本向量分类 → skip / pull / patch / push / pushDelete / conflict / blockSync 决策、删除传播、块级同步阈值 |
+| `sync_convergence_test.dart` | **两设备收敛**（多轮迭代至稳定）、并发 → 冲突副本且两份都保留、离线 100 次编辑只产生单个待发动作、删除传播、空设备边界 |
+| `patch_util_test.dart` | 补丁往返（含随机 100 组）、**1MB 改 3 处 patch < 50KB**、基线不匹配返回 null |
+| `two_device_e2e_test.dart` | **端到端**：配对 → 会话 → 同步 → 图片分块校验（SHA-256 一致）→ fast_auth 免码重连 → 攻击面（篡改/重放） |
+| `vault_paths_test.dart` | **禁止绝对路径 / `file://` / 盘符 / 反斜杠 / `data:` / base64 内嵌 / 路径穿越**、文件名格式、主题目录与图片目录隔离 |
 | `markdown_doc_test.dart` | 标题提取三条规则、摘要生成、图片引用/哈希抽取、光标处插入图片 |
-| `pairing_test.dart` | **配对握手（循环依赖修正）**、码 30s 轮换、±30s 容差、错误码拒绝、载荷不含码明文、masterKey 回传加解密 |
-| `vault_paths_test.dart` | **禁止绝对路径 / file:// / 盘符 / 反斜杠 / data: / base64 内嵌 / 路径穿越**、文件名格式校验、主题目录与图片资源目录隔离 |
+| `acceptance_test.dart` | 验收清单中可在纯逻辑层验证的条目集中处（如 pair_request 无明文码、patch 体积与编辑次数无关） |
 
-运行：
+### 5.2 `app/test/`
 
-```bash
-cd packages/notepad_core && dart test
-```
+| 文件 | 覆盖内容 |
+| --- | --- |
+| `schema_smoke_test.dart` | **最小冒烟**：建表、写入读回、索引真实存在、备份文件可被 sqlite3 打开、事务回滚、`integrity_check` |
+| `database_test.dart` | drift 表结构与索引、`integrityCheck`、`EXPLAIN QUERY PLAN` 验证索引被真实使用 |
+| `note_repository_test.dart` | 笔记 CRUD、软删除与墓碑、版本向量推进、`applyRemoteDelete` 合并、**冲突副本不撞 id（防回归）**、关库重开数据保留 |
+| `vault_paths_test.dart` | 目录布局、备份命名与列举、**只认真正的 64 位十六进制哈希**（防 GC 误删） |
+| `image_vault_test.dart` | 内容寻址导入与去重、压缩开关、**GC 不误删非哈希文件**、`theme/` 与 `assets/images` 隔离 |
+| `md_exporter_test.dart` | 导出 md、图片复制到 `assets/images/`、墓碑处理、空目录边界 |
+| `search_test.dart` | `LIKE` 与 FTS 两种实现、`shouldUseFts` 阈值、索引重建 |
+| `markdown_preview_test.dart` | widget 层渲染标题/列表/代码块/表格/任务列表/图片 |
+| `app_config_test.dart` | 配置序列化**不含密钥字段**、`masterKey` 只在 `secure_storage` |
+| `pairing_guard_test.dart` | 3 次失败锁 60s、按 IP 隔离、成功清零、窗口过期不计入 |
+| `update_version_test.dart` | **语义化版本比较**：`0.9.0 < 0.10.0`、`v` 前缀、`+build` 后缀、位数不等、预发布版、脏数据不抛异常 |
+| `update_checker_test.dart` | GitHub API 容错：403 限流/404/超时/JSON 变形 **全部返回 null**、缓存命中只请求一次、跳过语义 |
+| `update_dialog_test.dart` | 弹窗三个按钮行为、打不开浏览器不崩、超长 body 截断、**不阻塞首屏** |
 
 ---
 
@@ -363,7 +423,8 @@ cd packages/notepad_core && dart test
 5. **失败路径**：输入错误码 → 收到 `pair_fail` 且连接**立即关闭**；
    同 IP 在 60s 内失败 3 次 → 锁定 60s。
 6. **同步**：配对成功后自动全量对比（`note_list` + `image_manifest`）
-   → 差异笔记按 LWW 拉取/推送 → 缺失图片分块传输并校验 SHA-256 → UI 显示「已同步」。
+   → 差异笔记按**版本向量**分类决定拉取/推送/增量 patch/冲突副本
+   → 缺失图片分块传输并校验 SHA-256 → UI 显示「已同步」。
 7. **增量**：任一端编辑笔记 → 500ms 防抖后推送 → 对端应及时更新。
 8. **免配对重连**：两端重启 → 连接后立即 `fast_auth`（会话密钥加密）
    → 能解密即认证通过 → `auth_ok` → 直接进入同步，无需再次输入码。
