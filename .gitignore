@@ -38,3 +38,7 @@ Thumbs.db
 # pubspec.lock 含本机 pub 镜像 URL（127.0.0.1 代理），跨环境无意义；
 # 交给各环境自行 pub get 解析。
 pubspec.lock
+
+# 构建产物：APK 有 100MB+，绝不能提交进仓库
+*.apk
+*.aab
