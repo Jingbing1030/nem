@@ -63,6 +63,25 @@ jobs:
         continue-on-error: true
         run: cd app && flutter analyze
 
+      # ── 修补 cargokit 的 Gradle 9 不兼容 ──────────────────────────────
+      #
+      # super_clipboard → super_native_extensions / irondash_engine_context
+      # 走 cargokit 构建 Rust 原生库，其 cargokit/gradle/plugin.gradle 用了
+      # `project.exec {}`。**Gradle 9 已移除 Project.exec/javaexec**
+      # （改由 ProviderFactory.exec 提供），于是报：
+      #   Could not find method exec() for arguments [...] on project ':xxx'
+      #
+      # 两个包都已是 pub.dev 上的 latest（super_clipboard 0.9.1 /
+      # super_native_extensions 0.9.1 / irondash_engine_context 0.5.5），
+      # 上游 cargokit 最后更新 2025-06，**没有修**。所以这里就地打补丁。
+      #
+      # 替换语义要点：
+      #   project.exec  在非零退出时**默认抛异常**
+      #   providers.exec 不会 —— 必须显式 .result.get().assertNormalExitValue()
+      #   否则构建失败会被静默吞掉，可能产出不正确的产物。
+      - name: 修补 cargokit（Gradle 9 移除 Project.exec）
+        run: python3 .github/scripts/patch-cargokit.py
+
       - name: 构建 APK（arm64 单 ABI，debug）
         run: |
           cd app
