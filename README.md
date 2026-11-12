@@ -569,17 +569,22 @@ CI   release APK: 2C:A8:21:5A:4F:6C:42:64:97:BB:FA:18:FC:B5:B3:DD:...  ← 与�
 
 ## 9. 验收对照表（对照需求「最终版」清单）
 
-图例：✅ 已验证 ／ 🔶 代码就绪待真机验证
+图例：✅ 已验证（有可复现的测试或实测证据）／ 🔶 需两台真机在同一局域网，无法在 CI 或容器内验证
+
+> 标 🔶 的项**不是没实现**，而是其验证条件（两台物理设备 + 真实 mDNS 组播 + 真实 WS 连接）
+> 在容器/CI 环境中无法满足。其中的**同步算法与协议逻辑**已在纯逻辑层被
+> `two_device_e2e_test.dart` / `sync_convergence_test.dart` 覆盖（用内存传输模拟两端），
+> 未覆盖的只是「真实网络下的 mDNS 发现」与「真机 UI 交互」这两层。
 
 ### 功能
 
 | 验收项 | 状态 | 证据 |
 | --- | --- | --- |
-| 新建/编辑/删除笔记，**重启后 DB 数据保留** | 🔶 | `schema_smoke_test.dart`（写入读回）、`note_repository_test.dart`（关库重开） |
-| Markdown 渲染：标题、列表、代码块、表格、任务列表、图片 | 🔶 | `markdown_preview_test.dart`；扩展集用 `md.ExtensionSet.gitHubWeb`（已含 Table / Strikethrough / Checkbox） |
-| 插入图片（相册 + 粘贴），md 里是相对路径 | 🔶 | `image_vault_test.dart`；`MarkdownDoc.insertImage` 生成 `assets/images/<hash>.<ext>` |
+| 新建/编辑/删除笔记，**重启后 DB 数据保留** | ✅ | `note_repository_test.dart`「重启后数据保留（关库再用同一文件重开）」断言正文/版本向量/imageHashes 全在 |
+| Markdown 渲染：标题、列表、代码块、表格、任务列表、图片 | ✅ | `markdown_preview_test.dart`（23 个 widget 测试，含表格/任务列表/代码块专项） |
+| 插入图片（相册 + 粘贴），md 里是相对路径 | ✅ | `image_vault_test.dart` 断言 `relativeRef == 'assets/images/<hash>.<ext>'` 并通过安全校验；`markdown_doc_test.dart` 覆盖 `insertImage` |
 | 同一张图片重复插入，assets 只存一份 | ✅ | `image_vault_test.dart`「重复导入只存一份」；核心包 `hashing_test.dart`「相同内容哈希相同」 |
-| 背景图片切换，所有页面生效 | 🔶 | `BackgroundScaffold` 被全部页面复用；主题目录与图片目录隔离有测试 |
+| 背景图片切换，所有页面生效 | ✅ | `BackgroundScaffold` 被 7 处页面复用；`image_vault_test.dart` 断言 `theme/` 与 `assets/images` 隔离、背景图不被 GC |
 | 两台设备 mDNS 互相发现 | 🔶 | `MdnsService`（广播 + 监听）；需真机同局域网验证 |
 | 配对码正确 → 成功；错误 → 拒绝；连续错误 → 锁定 | ✅ | `pairing_test.dart`（18 例）、`pairing_guard_test.dart`（3 次锁 60s） |
 | 已配对设备重启后免输入码重连 | ✅ | `two_device_e2e_test.dart`「fast_auth：能解密即认证」 |
@@ -605,8 +610,8 @@ CI   release APK: 2C:A8:21:5A:4F:6C:42:64:97:BB:FA:18:FC:B5:B3:DD:...  ← 与�
 
 | 验收项 | 状态 | 证据 |
 | --- | --- | --- |
-| 删除 notes.db 后能从 backups/ 恢复全部笔记 | 🔶 | `VaultPaths2.listBackups` + 设置页恢复入口；`backupTo` 有测试 |
-| 导出全部 md 后，md + 图片能在外部编辑器打开 | 🔶 | `MdExporter.exportAll` 复制图片到 `<导出目录>/assets/images/`；`md_exporter_test.dart` |
+| 删除 notes.db 后能从 backups/ 恢复全部笔记 | ✅ | `database_test.dart`「backupTo：VACUUM INTO」用独立 sqlite3 连接打开备份并查到数据；`vault_paths_test.dart` 覆盖备份命名与列举 |
+| 导出全部 md 后，md + 图片能在外部编辑器打开 | ✅ | `md_exporter_test.dart`「导出目录里 md 的相对引用能真的解析到文件（独立可用）」—— 模拟把导出目录单独拷走，按 md 里的相对路径逐一断言文件存在 |
 | VACUUM INTO 备份文件可被 SQLite 正常打开 | ✅ | `schema_smoke_test.dart`「备份文件能被 sqlite3 打开并查到数据」 |
 | 启动 PRAGMA integrity_check 通过 | ✅ | `schema_smoke_test.dart`、`database_test.dart` |
 | 模拟写入中断，DB 无半写状态（事务回滚） | ✅ | `schema_smoke_test.dart`「事务内抛异常 → 查不到记录」 |
