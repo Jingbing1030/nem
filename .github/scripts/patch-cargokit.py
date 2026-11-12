@@ -1,34 +1,56 @@
 #!/usr/bin/env python3
 """
-修补 cargokit 的 Gradle 9 不兼容：Project.exec / DefaultTask.project.exec 已被移除。
+CI 构建前的就地补丁：修掉两个上游（cargokit 家族）插件的 AGP 9 / Gradle 9 不兼容。
 
-背景：irondash_engine_context 0.5.5 / super_native_extensions 0.9.1 的
-cargokit/gradle/plugin.gradle 在 CargoKitBuildTask（DefaultTask 子类）的
-@TaskAction 方法里调用 `project.exec { }`。Gradle 9 移除了该 API，报：
-  Could not find method exec() for arguments [...] on project ':xxx'
-  / 在 task 里则报 Could not get unknown property 'providers'
+涉及包（都已是 pub.dev latest，上游未适配）：
+  - irondash_engine_context 0.5.5
+  - super_native_extensions   0.9.1
 
-两个包都已是 pub.dev latest，上游 cargokit 最后更新 2025-06，没有适配。
+## 补丁 1：Gradle 9 移除了 Project.exec()
 
-修法（两步，缺一不可）：
- 1. 给脚本加 import 并在类里声明注入的 ExecOperations：
-      abstract class CargoKitBuildTask extends DefaultTask {
-          @Inject abstract ExecOperations getExecOperations()
-      }
-    Gradle 会把 ExecOperations 注入进抽象 getter。
- 2. 把 `project.exec { BODY }` 换成
-      execOperations.exec { BODY }.assertNormalExitValue()
+`cargokit/gradle/plugin.gradle` 在 CargoKitBuildTask（DefaultTask 子类）的
+@TaskAction 里调用 `project.exec { }`。Gradle 9 已彻底移除该 API：
+    javap org/gradle/api/Project.class | grep -c exec   → 0
+报错：
+    > Could not find method exec() for arguments [...] on project ':xxx'
+    或（若误用裸 providers） Could not get unknown property 'providers'
+      for task '...' of type CargoKitBuildTask
 
-⚠️ 语义要点：project.exec 在非零退出时**默认抛异常**，而 ExecOperations.exec
-   不会 —— 必须显式 assertNormalExitValue()，否则构建失败会被静默吞掉。
+修法：
+  1) 给 CargoKitBuildTask 注入 ExecOperations：
+       @Inject abstract org.gradle.process.ExecOperations getExecOperations()
+     （DefaultTask 上没有 providers；必须走 @Inject 服务注入）
+  2) project.exec { BODY }  →  execOperations.exec { BODY }.assertNormalExitValue()
+
+  ⚠️ assertNormalExitValue() 不可省：project.exec 非零退出默认抛异常，
+     ExecOperations.exec 不抛，不调就会静默吞掉构建失败。
+
+## 补丁 2：插件硬编码 compileSdkVersion 31，低于 androidx 要求
+
+两个插件的 android/build.gradle 都写死 `compileSdkVersion 31`，
+而它们传递依赖的 androidx 库要求 ≥34（AAR metadata 检查失败）：
+    Execution failed for task ':irondash_engine_context:checkDebugAarMetadata'
+    > Dependency 'androidx.fragment:fragment:1.7.1' requires ... version 34 or later.
+      :irondash_engine_context is currently compiled against android-31.
+
+修法：把 `compileSdkVersion 31` 抬到 Flutter 3.50 的默认值 36。
+      只影响编译期 API 级别，不动 minSdk/targetSdk。
+
+两个补丁都只改 CI runner 的 pub-cache 副本，**业务源码零改动**。
+将来源码修好后，本脚本可整体删除。
 """
 import re
 import sys
 from pathlib import Path
 
+# ── 目标值 ────────────────────────────────────────────────────────────
+# Flutter 3.50 的 FlutterExtension.compileSdkVersion 默认值
+TARGET_COMPILE_SDK = 36
+
 EXEC_RE = re.compile(r'(?:project\.)?exec\s*\{')
 INJECT_DECL = '    @Inject abstract org.gradle.process.ExecOperations getExecOperations()\n'
 CLASS_RE = re.compile(r'(abstract\s+class\s+CargoKitBuildTask\s+extends\s+DefaultTask\s*\{[^\n]*\n)')
+COMPILE_SDK_RE = re.compile(r'compileSdkVersion\s+(\d+)')
 
 
 def find_matching_brace(s: str, open_idx: int) -> int:
@@ -46,23 +68,19 @@ def find_matching_brace(s: str, open_idx: int) -> int:
     raise ValueError('unbalanced braces')
 
 
-def patch_file(path: Path) -> int:
+def patch_cargokit_gradle(path: Path) -> int:
     src = path.read_text()
 
-    # ── 步骤 1：注入 ExecOperations ──────────────────────────────────
+    # 补丁 1a：注入 ExecOperations
     if 'getExecOperations' not in src:
         m = CLASS_RE.search(src)
         if not m:
-            print(f'  ⚠️ 找不到 CargoKitBuildTask 类声明，跳过注入：{path}')
+            print(f'  ⚠️ 找不到 CargoKitBuildTask 类声明，跳过：{path}')
             return 0
         src = src[:m.end()] + INJECT_DECL + src[m.end():]
-    else:
-        print(f'  （已注入过 ExecOperations）')
 
-    # ── 步骤 2：替换 exec 调用 ───────────────────────────────────────
-    out = []
-    i = 0
-    count = 0
+    # 补丁 1b：替换 exec 调用
+    out, i, count = [], 0, 0
     while True:
         m = EXEC_RE.search(src[i:])
         if not m:
@@ -71,32 +89,52 @@ def patch_file(path: Path) -> int:
         start = i + m.start()
         brace = i + m.end() - 1
         end = find_matching_brace(src, brace)
-        body = src[brace:end + 1]
         out.append(src[i:start])
-        out.append('execOperations.exec ' + body + '.assertNormalExitValue()')
+        out.append('execOperations.exec ' + src[brace:end + 1] + '.assertNormalExitValue()')
         count += 1
         i = end + 1
     new = ''.join(out)
 
-    if count or 'getExecOperations' in new:
-        path.with_suffix(path.suffix + '.orig-gradle9').write_text(path.read_text())
+    if new != path.read_text():
         path.write_text(new)
     return count
 
 
+def patch_compile_sdk(path: Path) -> bool:
+    """把过低的 compileSdkVersion 抬到 TARGET_COMPILE_SDK。"""
+    src = path.read_text()
+    m = COMPILE_SDK_RE.search(src)
+    if not m:
+        return False
+    cur = int(m.group(1))
+    if cur >= TARGET_COMPILE_SDK:
+        return False
+    new = COMPILE_SDK_RE.sub(f'compileSdkVersion {TARGET_COMPILE_SDK}', src)
+    path.write_text(new)
+    print(f'  compileSdk {cur} → {TARGET_COMPILE_SDK}：{path}')
+    return True
+
+
 def main() -> int:
     roots = sys.argv[1:] or [str(Path.home() / '.pub-cache' / 'hosted')]
-    total = files = 0
+    exec_files = exec_calls = sdk_files = 0
     for root in roots:
-        for f in Path(root).rglob('cargokit/gradle/plugin.gradle'):
-            n = patch_file(f)
+        for f in sorted(Path(root).rglob('cargokit/gradle/plugin.gradle')):
+            n = patch_cargokit_gradle(f)
             if n:
-                files += 1
-                total += n
-                print(f'  修补 {f}: {n} 处 + 注入 ExecOperations')
-    print(f'共修补 {files} 个文件、{total} 处调用')
-    if files == 0:
-        print('⚠️ 没找到需要修补的 cargokit plugin.gradle')
+                exec_files += 1
+                exec_calls += n
+                print(f'  修补 exec：{f}（{n} 处 + 注入 ExecOperations）')
+        # 两个 cargokit 插件的 android/build.gradle
+        for pkg in ('irondash_engine_context', 'super_native_extensions'):
+            for f in sorted(Path(root).rglob(f'{pkg}-*/android/build.gradle')):
+                if patch_compile_sdk(f):
+                    sdk_files += 1
+
+    print(f'\n汇总：exec 补丁 {exec_files} 个文件 / {exec_calls} 处；'
+          f'compileSdk 补丁 {sdk_files} 个文件')
+    if exec_files == 0:
+        print('⚠️ 没找到需要打 exec 补丁的 cargokit plugin.gradle')
     return 0
 
 
