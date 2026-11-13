@@ -1,7 +1,7 @@
 name: lan_notepad
 description: 局域网记事本 —— Markdown 笔记 + 内容寻址图片 + 局域网加密同步。
 publish_to: none
-version: 0.2.1+2
+version: 0.2.2+3
 
 environment:
   sdk: ^3.14.0
