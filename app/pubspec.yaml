@@ -81,3 +81,8 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  assets:
+    # 拟物化便签背景（内置主题）。渲染源为 tools/note-bg.svg，
+    # 见 tools/render-assets.sh —— 改设计后跑那个脚本重新生成。
+    - assets/backgrounds/

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      深色模式下的启动底色。同名颜色在基础 values/colors.xml 里也有声明 ——
+      这是 Android 资源系统的硬性要求（否则 lint 报 MissingDefaultResource，
+      且在未匹配 -night 的配置下查询会崩）。
+      这里只是覆盖值，此举同时让 lint 满意。
+    -->
+    <color name="launch_background">#111418</color>
+    <color name="launch_background_dark">#111418</color>
+</resources>

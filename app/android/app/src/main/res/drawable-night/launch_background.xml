@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  夜间模式的启动画面底色。
+
+  为什么需要这个文件：values-night/styles.xml 的 LaunchTheme 指向
+  @drawable/launch_background，若此处没有 night 版本，就会解析到
+  drawable/launch_background.xml（内容为白色）→ 夜间启动时先闪一下白底再变深色。
+  资源限定符 -night 让系统在深色模式下自动选用本文件。
+
+  颜色与 Flutter 端 buildThemeData() 里深色主题的 surface 保持一致
+  （见 lib/src/theme/theme_config_provider.dart）。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/launch_background_dark" />
+</layer-list>

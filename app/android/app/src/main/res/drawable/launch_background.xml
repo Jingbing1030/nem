@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Modify this file to customize your launch splash screen -->
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@android:color/white" />
+<!--
+  浅色模式的启动画面底色。
 
-    <!-- You can insert your own image assets here -->
-    <!-- <item>
-        <bitmap
-            android:gravity="center"
-            android:src="@mipmap/launch_image" />
-    </item> -->
+  为什么不用 @android:color/white：Flutter 首帧的 scaffold 底色是 M3 的 surface
+  (#FFFBFE)，纯白与之有细微色差，启动瞬间会看到一次轻微跳变。
+  用与 Flutter 主题一致的颜色可以消除这个跳变。
+
+  深色模式由 drawable-night/launch_background.xml 覆盖（-night 限定符优先级高于 -v21）。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/launch_background" />
 </layer-list>

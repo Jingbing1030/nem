@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:notepad_core/notepad_core.dart';
 
+import 'src/config/app_config.dart';
 import 'src/config/config_store.dart';
 import 'src/db/database.dart';
 import 'src/db/note_repository.dart';
@@ -102,10 +103,19 @@ class LanNotepadApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = ref.watch(themeConfigProvider);
+
     return MaterialApp(
       title: '局域网记事本',
       debugShowCheckedModeBanner: false,
-      theme: buildThemeData(theme),
+      // 深浅色交给 Flutter 自己选：themeMode=system 时它会跟随系统设置，
+      // 且系统开关变化时自动重建 —— 比手动读 MediaQuery 更稳。
+      theme: buildThemeData(theme, brightness: Brightness.light),
+      darkTheme: buildThemeData(theme, brightness: Brightness.dark),
+      themeMode: switch (theme.brightness) {
+        BrightnessMode.light => ThemeMode.light,
+        BrightnessMode.dark => ThemeMode.dark,
+        _ => ThemeMode.system,
+      },
       // 启动后延迟检查 GitHub Release 并提示更新（可选功能，失败静默、
       // 不阻塞首屏 —— 详见 src/update/startup_update_check.dart）。
       home: const StartupUpdateCheck(child: NotesListPage()),

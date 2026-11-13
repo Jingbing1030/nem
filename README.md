@@ -554,6 +554,59 @@ CI   release APK: 2C:A8:21:5A:4F:6C:42:64:97:BB:FA:18:FC:B5:B3:DD:...  ← 与�
 
 ---
 
+### 7.10 深色模式、启动白闪与图标资源
+
+#### 修复的三个问题（2026-11-13）
+
+用户反馈：「打开之后整个背景会闪一下白色背景，然后变成纯黑色背景」。
+实为三个独立缺陷叠加：
+
+| # | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | 启动瞬间**闪白** | `values-night/styles.xml` 的 `LaunchTheme` 指向 `@drawable/launch_background`，而该 drawable 内容是 `@android:color/white`，且**没有 `drawable-night` 版本** → 深色模式下启动画面仍是白的 | 新增 `drawable-night/launch_background.xml`；颜色改用 `values{,-night}/colors.xml` 里的具名颜色 |
+| 2 | 随后变成**纯黑** | `buildThemeData` 把 `scaffoldBackgroundColor` 与 `canvasColor` **无条件设为透明**，而当时**没有任何组件负责铺底** → 整棵 UI 透明，直接露出 Android 窗口底色（`Theme.Black` 的 `colorBackground` = 纯黑 `#000000`） | 给 `BackgroundScaffold` 加**内置背景兜底**，使「总有一层不透明内容铺底」；底色因此可以安全地保持透明 |
+| 3 | **不支持夜间模式** | `MaterialApp` 只设了 `theme`，没有 `darkTheme`/`themeMode`；`brightness` 只有 `light`/`dark` 两个值，默认还是 `light` | `brightness` 增加 `system`（默认）；`MaterialApp` 用 `theme` + `darkTheme` + `themeMode`，由 Flutter 原生跟随系统 |
+
+**附带修掉的一个真 bug**：`textColor` 默认值是 `'#000000'`，
+深色模式下会**黑字黑底看不见**（深色 fallback 永远不会生效，因为 `#000000` 能成功解析）。
+现改为 `null` = 自动，按深浅色选黑/白；设置页也提供「自动」按钮。
+
+#### 启动底色的取值依据
+
+Android 资源是编译期常量，无法跟随用户在 App 内改的强调色。
+为消除「启动画面 → 首帧」的色差，取值实测自 Flutter 实际输出：
+
+```
+buildThemeData(ThemeConfig(), brightness: light).colorScheme.surface = #F8F9FF
+buildThemeData(ThemeConfig(), brightness: dark ).colorScheme.surface = #111418
+```
+
+（用 `ColorScheme.fromSeed` 的 surface 会带一点种子色倾向，所以强调色一变，
+这两个值就不再精确 —— 但对消除最刺眼的白闪/黑闪仍然有效。）
+
+#### 图像资源
+
+| 资源 | 来源 | 生成方式 |
+|---|---|---|
+| 应用图标（`mipmap-*/ic_launcher.png`，5 个密度） | `assets/branding/source.jpg` | **原图直接缩放，不抠图、不合成** |
+| 内置背景（`assets/backgrounds/app_bg.jpg`） | 同上 | 按宽度铺满 + 用原图自身黑底补足竖屏高度 |
+| 启动底色（`values{,-night}/colors.xml`） | 实测 Flutter surface | 手工填写 |
+
+重新生成：`bash app/tools/render-assets.sh`（依赖 ImageMagick）。
+**不要手工编辑这些产物** —— 要改外观就改原图再重跑脚本。
+
+**为什么不做自适应图标**（`mipmap-anydpi-v26/`）：它要求前景内容限制在中心
+66/108 的安全区，且系统会按设备裁成圆形/方形/圆角，**会把原图的构图裁掉**。
+传统图标能完整显示原图，故选择它。
+
+#### 测试
+
+`app/test/theme_test.dart`（14 例）+ `app/test/app_config_test.dart`（13 例）覆盖：
+`system` 解析、非法值兜底、底色透明性、深色色板非纯黑、文字色自动/显式/非法回退、
+色板随强调色变化、`BrightnessMode` 三态互斥、旧配置向前兼容。
+
+---
+
 ## 8. 安全设计要点
 
 - masterKey 只存 `flutter_secure_storage`（Android Keystore 支撑），

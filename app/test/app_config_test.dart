@@ -5,13 +5,56 @@ import 'package:lan_notepad/src/config/app_config.dart';
 
 void main() {
   group('ThemeConfig', () {
-    test('默认值符合需求（透明度 0.15）', () {
+    test('默认值：透明度 0.15、文字色自动、跟随系统', () {
       const t = ThemeConfig();
       expect(t.backgroundOpacity, 0.15);
-      expect(t.textColor, '#000000');
+      // textColor 默认 null = 自动（按深浅色选黑/白）。
+      // 早期默认 '#000000' 会让深色模式黑字黑底看不见，故改为可空。
+      expect(t.textColor, isNull);
       expect(t.accentColor, '#4A90D9');
       expect(t.backgroundImage, isNull);
-      expect(t.isDark, isFalse);
+      // 默认跟随系统，而不是强制浅色。
+      expect(t.followsSystem, isTrue);
+      expect(t.isDark, isFalse); // system 不等于"明确深色"
+      expect(t.brightness, BrightnessMode.system);
+    });
+
+    test('BrightnessMode 三个取值与展示名', () {
+      expect(BrightnessMode.all, hasLength(3));
+      expect(BrightnessMode.label(BrightnessMode.system), '跟随系统');
+      expect(BrightnessMode.label(BrightnessMode.light), '浅色');
+      expect(BrightnessMode.label(BrightnessMode.dark), '深色');
+      // 未知取值不应崩溃，按"跟随系统"处理
+      expect(BrightnessMode.label('nonsense'), '跟随系统');
+    });
+
+    test('isDark / followsSystem 三者互斥', () {
+      expect(const ThemeConfig(brightness: BrightnessMode.light).isDark, isFalse);
+      expect(const ThemeConfig(brightness: BrightnessMode.light).followsSystem, isFalse);
+      expect(const ThemeConfig(brightness: BrightnessMode.dark).isDark, isTrue);
+      expect(const ThemeConfig(brightness: BrightnessMode.dark).followsSystem, isFalse);
+      expect(const ThemeConfig(brightness: BrightnessMode.system).isDark, isFalse);
+      expect(const ThemeConfig(brightness: BrightnessMode.system).followsSystem, isTrue);
+    });
+
+    test('copyWith 可把文字颜色设回自动（clearTextColor）', () {
+      const t = ThemeConfig(textColor: '#123456');
+      // 注意：copyWith(textColor: null) 表示"不改"，不是"清空"
+      expect(t.copyWith().textColor, '#123456');
+      expect(t.copyWith(textColor: '#ABCDEF').textColor, '#ABCDEF');
+      expect(t.copyWith(clearTextColor: true).textColor, isNull);
+    });
+
+    test('copyWith 可切换 brightness', () {
+      const t = ThemeConfig();
+      expect(
+        t.copyWith(brightness: BrightnessMode.dark).brightness,
+        BrightnessMode.dark,
+      );
+      expect(
+        t.copyWith(brightness: BrightnessMode.light).brightness,
+        BrightnessMode.light,
+      );
     });
 
     test('JSON 往返无损', () {
@@ -20,7 +63,7 @@ void main() {
         backgroundOpacity: 0.42,
         textColor: '#123456',
         accentColor: '#ABCDEF',
-        brightness: 'dark',
+        brightness: BrightnessMode.dark,
       );
       final back = ThemeConfig.fromJson(
         jsonDecode(jsonEncode(t.toJson())) as Map<String, dynamic>,
@@ -43,7 +86,21 @@ void main() {
     test('字段缺失时用默认值兜底（向前兼容）', () {
       final t = ThemeConfig.fromJson(<String, dynamic>{});
       expect(t.backgroundOpacity, 0.15);
+      expect(t.textColor, isNull); // 自动
+      expect(t.brightness, BrightnessMode.system);
+    });
+
+    test('旧版本配置（无 brightness / 有 textColor）仍可解析', () {
+      // 模拟早期版本写下的 JSON：brightness 缺失、textColor 是具体色值
+      final t = ThemeConfig.fromJson(<String, dynamic>{
+        'backgroundImage': 'theme/old.jpg',
+        'textColor': '#000000',
+      });
+      expect(t.backgroundImage, 'theme/old.jpg');
+      // 已存的显式颜色要保留（不回退成自动）
       expect(t.textColor, '#000000');
+      // 缺 brightness 时按跟随系统，而不是沿用旧的"强制浅色"
+      expect(t.brightness, BrightnessMode.system);
     });
   });
 

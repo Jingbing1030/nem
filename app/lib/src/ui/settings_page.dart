@@ -6,8 +6,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
 
 import 'package:image_picker/image_picker.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
 
+import '../config/app_config.dart';
 import '../net/sync_service.dart';
 import '../db/database.dart';
 import '../providers.dart';
@@ -24,6 +26,25 @@ class SettingsPage extends ConsumerStatefulWidget {
 
 class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _busy = false;
+
+  /// 版本号标签；读取失败时回退到固定文案（不让设置页因此报错）。
+  String _versionLabel = '局域网记事本';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVersion();
+  }
+
+  Future<void> _loadVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (!mounted) return;
+      setState(() => _versionLabel = '局域网记事本 ${info.version}');
+    } catch (_) {
+      // 读不到版本不影响设置页使用。
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -115,10 +136,15 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           ),
           _colorTile(
             '文字颜色',
-            theme.textColor,
+            theme.textColor ?? '自动',
             (c) => ref
                 .read(appConfigProvider.notifier)
                 .setTheme(theme.copyWith(textColor: c)),
+            onReset: theme.textColor == null
+                ? null
+                : () => ref
+                    .read(appConfigProvider.notifier)
+                    .setTheme(theme.copyWith(clearTextColor: true)),
           ),
           _colorTile(
             '强调色',
@@ -127,13 +153,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 .read(appConfigProvider.notifier)
                 .setTheme(theme.copyWith(accentColor: c)),
           ),
-          SwitchListTile(
-            secondary: const Icon(Icons.brightness_6_outlined),
-            title: const Text('深色模式'),
-            value: theme.isDark,
-            onChanged: (v) => ref.read(appConfigProvider.notifier).setTheme(
-                  theme.copyWith(brightness: v ? 'dark' : 'light'),
-                ),
+          ListTile(
+            leading: const Icon(Icons.brightness_6_outlined),
+            title: const Text('深浅色模式'),
+            subtitle: Text(BrightnessMode.label(theme.brightness)),
+            trailing: const Icon(Icons.chevron_right, size: 20),
+            onTap: _busy ? null : () => _pickBrightness(theme),
           ),
 
           _section('同步'),
@@ -193,7 +218,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           const SizedBox(height: 28),
           Center(
             child: Text(
-              '局域网记事本 0.1.0',
+              // 从 pubspec 读版本，避免像早期那样把版本号写死在 UI 里
+              //（曾长期显示过时的 0.1.0）。
+              _versionLabel,
               style: TextStyle(
                 fontSize: 12,
                 color: Theme.of(context).colorScheme.outline,
@@ -218,24 +245,76 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
       );
 
-  /// 颜色选择：用一组预设色 + 色相/明度滑杆，不引入额外依赖。
-  Widget _colorTile(String label, String hex, void Function(String) onPick) {
+  /// 选择深浅色模式（跟随系统 / 浅色 / 深色）。
+  ///
+  /// 用对话框而非 Switch：三态无法用布尔开关表达，
+  /// 而「跟随系统」是最常用的默认值。
+  Future<void> _pickBrightness(ThemeConfig theme) async {
+    final picked = await showDialog<String>(
+      context: context,
+      // Flutter 3.32+ 起 RadioListTile 的 groupValue/onChanged 已弃用，
+      // 改用 RadioGroup 祖先管理选中值。
+      builder: (ctx) => SimpleDialog(
+        title: const Text('深浅色模式'),
+        children: <Widget>[
+          RadioGroup<String>(
+            groupValue: theme.brightness,
+            onChanged: (v) => Navigator.of(ctx).pop(v),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: BrightnessMode.all
+                  .map(
+                    (mode) => RadioListTile<String>(
+                      value: mode,
+                      title: Text(BrightnessMode.label(mode)),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (picked == null || !mounted) return;
+    await ref
+        .read(appConfigProvider.notifier)
+        .setTheme(theme.copyWith(brightness: picked));
+  }
+
+  /// 颜色选择：用一组预设色，不引入额外依赖。
+  ///
+  /// [hex] 为展示值；[onReset] 非空时显示「自动」按钮（用于把颜色设回自动）。
+  Widget _colorTile(
+    String label,
+    String hex,
+    void Function(String) onPick, {
+    VoidCallback? onReset,
+  }) {
     final presets = <String>[
       '#000000', '#FFFFFF', '#37474F', '#4A90D9',
       '#7B1FA2', '#C62828', '#2E7D32', '#EF6C00',
     ];
+    final isAuto = hex == '自动';
     return ListTile(
       leading: Container(
         width: 22,
         height: 22,
         decoration: BoxDecoration(
-          color: _parse(hex),
+          // 「自动」时底色随当前主题，并用文字示意
+          color: isAuto ? Theme.of(context).colorScheme.surfaceContainerHighest : _parse(hex),
           borderRadius: BorderRadius.circular(4),
           border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
         ),
+        child: isAuto
+            ? Icon(Icons.brightness_auto,
+                size: 14, color: Theme.of(context).colorScheme.onSurfaceVariant)
+            : null,
       ),
       title: Text(label),
       subtitle: Text(hex, style: const TextStyle(fontSize: 12)),
+      trailing: onReset == null
+          ? null
+          : TextButton(onPressed: onReset, child: const Text('自动')),
       onTap: () async {
         final picked = await showDialog<String>(
           context: context,

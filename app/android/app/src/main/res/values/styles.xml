@@ -1,9 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+      启动画面主题：进程启动到 Flutter 首帧绘制完成期间显示。
+      windowBackground 用 @drawable/launch_background（按日夜自动切换），
+      不要写 @android:color/white —— 那会导致夜间启动先闪一下白底。
+    -->
     <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
-        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:windowBackground">@drawable/launch_background</item>
     </style>
+
+    <!-- Flutter 首帧之后的窗口主题。windowBackground 只是 Flutter UI 的底衬，
+         Flutter 侧会自行绘制不透明底色（见 buildThemeData 的 scaffoldBackgroundColor）。-->
     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
-        <item name="android:windowBackground">?android:colorBackground</item>
+        <item name="android:windowBackground">@color/launch_background</item>
     </style>
 </resources>

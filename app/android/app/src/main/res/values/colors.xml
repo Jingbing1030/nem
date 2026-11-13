@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  启动画面与窗口底色（默认 = 浅色配置）。
+
+  命名约定：**每个颜色名都必须在基础 values/ 里有声明**，
+  否则在「未匹配到 -night 限定符」的配置下引用它会崩溃，
+  且 release 构建的 lintVitalRelease 会直接报错：
+    MissingDefaultResource: The color "x" in values-night has no
+    declaration in the base values folder
+  values-night/colors.xml 只覆盖其中的值。
+
+  色值依据：实测 Flutter 的 colorScheme.surface
+    light = #F8F9FF   dark = #111418
+  与首帧一致可消除「启动画面 → 首帧」的色差。
+-->
+<resources>
+    <!-- 浅色模式启动底色 -->
+    <color name="launch_background">#F8F9FF</color>
+
+    <!--
+      深色模式启动底色。基础文件夹里**必须**有同名声明（见上方说明），
+      这里给一个保守的深色值；真正生效的是 values-night 里的那个。
+    -->
+    <color name="launch_background_dark">#111418</color>
+</resources>
