@@ -554,9 +554,36 @@ CI   release APK: 2C:A8:21:5A:4F:6C:42:64:97:BB:FA:18:FC:B5:B3:DD:...  ← 与�
 
 ---
 
-### 7.10 深色模式、启动白闪与图标资源
+### 7.10 深色模式、启动白闪、标题栏闪烁与图标资源
 
-#### 修复的三个问题（2026-11-13）
+#### 修复的第四、第五个问题：标题栏闪烁（2026-11-14）
+
+用户反馈：「在不设背景图片时使用纯色背景，标题栏还是有奇怪的闪烁问题」。
+实为**两个缺陷叠加**，与此前的纯黑问题同源（都是「透明底色 + 无人铺满」这个设计缺陷的余波）：
+
+| # | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| 4 | **标题栏闪烁** | `BackgroundScaffold` 的背景 `Stack` 放在 `Scaffold.body` 里，**AppBar 与状态栏区域没有任何背景** → 露出窗口底色；同时 M3 的 `AppBar` 默认 `scrolledUnderElevation: 3.0`，其 `surfaceTintColor` 未显式指定时回落成 `colorScheme.surfaceTint`，内容滚动到标题栏下方时会把这层色调叠加做**透明度动画**。因 AppBar 底色透明，该动画直接表现为标题栏忽明忽暗 | ① 把背景层移到 `Scaffold` **之外**的 `Stack`，铺满整屏（含 AppBar 与状态栏）；② 在 `appBarTheme` 里显式关掉 `scrolledUnderElevation`（→ 0）、`surfaceTintColor`（→ transparent）、`shadowColor`（→ transparent） |
+| 5 | **纯色背景下状态栏图标不匹配** | AppBar 未指定 `systemOverlayStyle` 时，会用 `ThemeData.estimateBrightnessForColor(底色)` 推断；底色是 `transparent` 时推断结果**恒为「浅色」** → 深色主题下状态栏图标配色错误 | 按主题深浅显式指定 `systemOverlayStyle`（深色 → `light` 图标，浅色 → `dark` 图标） |
+
+**同时按用户要求调整了背景语义**（此前实现与预期不符）：
+
+| `ThemeConfig.backgroundImage` | 表现 |
+|---|---|
+| `null`（默认） | **纯色**（主题 `colorScheme.surface`）—— 用户明确要求「不设背景图片时用纯色」 |
+| `:bundled:`（哨兵值） | 内置背景图 + 半透明膜 |
+| 其他字符串 | 用户自选图片（相对笔记库根目录）+ 半透明膜 |
+
+早先版本把内置图当成默认兜底，导致「没设背景」时也显示立绘，与预期不符，已改为纯色。
+哨兵值用冒号包裹（冒号在真实文件名里非法），不会与用户的相对路径冲突，
+也不必改动配置的序列化格式 —— 旧配置解析后仍是 `null`（纯色），**行为自然向后兼容**。
+
+另外把 `canvasColor` **改回默认**（`scheme.surface`）：它影响 Drawer、弹出菜单、
+BottomSheet 等浮层的默认底色，此前一并设为透明会让这些浮层透出下层内容。
+**只有 `Scaffold` 需要透明。**
+
+#### 修复的前三个问题（2026-11-13）
+
 
 用户反馈：「打开之后整个背景会闪一下白色背景，然后变成纯黑色背景」。
 实为三个独立缺陷叠加：
@@ -564,7 +591,7 @@ CI   release APK: 2C:A8:21:5A:4F:6C:42:64:97:BB:FA:18:FC:B5:B3:DD:...  ← 与�
 | # | 现象 | 根因 | 修复 |
 |---|---|---|---|
 | 1 | 启动瞬间**闪白** | `values-night/styles.xml` 的 `LaunchTheme` 指向 `@drawable/launch_background`，而该 drawable 内容是 `@android:color/white`，且**没有 `drawable-night` 版本** → 深色模式下启动画面仍是白的 | 新增 `drawable-night/launch_background.xml`；颜色改用 `values{,-night}/colors.xml` 里的具名颜色 |
-| 2 | 随后变成**纯黑** | `buildThemeData` 把 `scaffoldBackgroundColor` 与 `canvasColor` **无条件设为透明**，而当时**没有任何组件负责铺底** → 整棵 UI 透明，直接露出 Android 窗口底色（`Theme.Black` 的 `colorBackground` = 纯黑 `#000000`） | 给 `BackgroundScaffold` 加**内置背景兜底**，使「总有一层不透明内容铺底」；底色因此可以安全地保持透明 |
+| 2 | 随后变成**纯黑** | `buildThemeData` 把 `scaffoldBackgroundColor` 与 `canvasColor` **无条件设为透明**，而当时**没有任何组件负责铺底** → 整棵 UI 透明，直接露出 Android 窗口底色（`Theme.Black` 的 `colorBackground` = 纯黑 `#000000`） | 让 `BackgroundScaffold` 在最外层铺一层**全覆盖**内容（纯色 / 内置图 / 自选图），使「总有一层铺满整屏」；底色因此可以安全地保持透明 |
 | 3 | **不支持夜间模式** | `MaterialApp` 只设了 `theme`，没有 `darkTheme`/`themeMode`；`brightness` 只有 `light`/`dark` 两个值，默认还是 `light` | `brightness` 增加 `system`（默认）；`MaterialApp` 用 `theme` + `darkTheme` + `themeMode`，由 Flutter 原生跟随系统 |
 
 **附带修掉的一个真 bug**：`textColor` 默认值是 `'#000000'`，

@@ -2,11 +2,15 @@
 <!--
   浅色模式的启动画面底色。
 
-  为什么不用 @android:color/white：Flutter 首帧的 scaffold 底色是 M3 的 surface
-  (#FFFBFE)，纯白与之有细微色差，启动瞬间会看到一次轻微跳变。
+  为什么不用 @android:color/white：Flutter 首帧的 scaffold 底色与 M3 surface
+  (#F8F9FF) 一致，而纯白 (#FFFFFF) 与之有色差，启动瞬间会看到一次轻微跳变。
   用与 Flutter 主题一致的颜色可以消除这个跳变。
 
-  深色模式由 drawable-night/launch_background.xml 覆盖（-night 限定符优先级高于 -v21）。
+  深色模式由 drawable-night/launch_background.xml 覆盖。
+
+  ⚠️ 这个文件曾被 Flutter 模板版本（内容为 @android:color/white）覆盖过一次，
+  导致"启动闪白"的修复失效 —— 若将来又变回白色，就是同类问题。
+  正确内容应引用 @color/launch_background（见 values/colors.xml）。
 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="@color/launch_background" />

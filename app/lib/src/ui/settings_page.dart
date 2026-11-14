@@ -85,55 +85,48 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           ),
 
           _section('主题'),
+          // 背景三选一：纯色（默认）/ 内置图 / 自选图。
+          // 用 ListTile + 对话框而不是开关：三种状态无法用布尔表达。
           ListTile(
-            leading: const Icon(Icons.wallpaper),
-            title: const Text('背景图片'),
+            leading: Icon(
+              theme.backgroundImage == null
+                  ? Icons.format_color_fill
+                  : Icons.wallpaper,
+            ),
+            title: const Text('背景'),
             subtitle: Text(
-              theme.backgroundImage ?? '未设置',
+              _backgroundLabel(theme.backgroundImage),
               style: const TextStyle(fontSize: 12),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                if (theme.backgroundImage != null)
-                  IconButton(
-                    tooltip: '清除',
-                    icon: const Icon(Icons.close, size: 18),
-                    onPressed: _busy
-                        ? null
-                        : () => ref
-                            .read(appConfigProvider.notifier)
-                            .setBackgroundImage(null),
+            trailing: const Icon(Icons.chevron_right, size: 20),
+            onTap: _busy ? null : () => _pickBackgroundSource(theme),
+          ),
+          // 透明度只对图片背景有意义（纯色时底色就是它本身）。
+          if (theme.backgroundImage != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    '背景透明度：${theme.backgroundOpacity.toStringAsFixed(2)}',
+                    style: const TextStyle(fontSize: 13),
                   ),
-                const Icon(Icons.image_outlined, size: 18),
-              ],
+                  Slider(
+                    value: theme.backgroundOpacity.clamp(0.0, 1.0),
+                    min: 0,
+                    max: 1,
+                    divisions: 20,
+                    label: theme.backgroundOpacity.toStringAsFixed(2),
+                    onChanged: (v) => ref
+                        .read(appConfigProvider.notifier)
+                        .setTheme(theme.copyWith(backgroundOpacity: v)),
+                  ),
+                ],
+              ),
             ),
-            onTap: _busy ? null : _pickBackground,
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  '背景透明度：${theme.backgroundOpacity.toStringAsFixed(2)}',
-                  style: const TextStyle(fontSize: 13),
-                ),
-                Slider(
-                  value: theme.backgroundOpacity.clamp(0.0, 1.0),
-                  min: 0,
-                  max: 1,
-                  divisions: 20,
-                  label: theme.backgroundOpacity.toStringAsFixed(2),
-                  onChanged: (v) => ref
-                      .read(appConfigProvider.notifier)
-                      .setTheme(theme.copyWith(backgroundOpacity: v)),
-                ),
-              ],
-            ),
-          ),
           _colorTile(
             '文字颜色',
             theme.textColor ?? '自动',
@@ -245,12 +238,72 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
       );
 
+  /// 背景当前形态的展示文案。
+  String _backgroundLabel(String? spec) {
+    if (spec == null) return '纯色（跟随主题）';
+    if (spec == kBundledToken) return '内置背景图';
+    return spec;
+  }
+
+  /// 选择背景来源：纯色 / 内置图 / 从相册选图。
+  Future<void> _pickBackgroundSource(ThemeConfig theme) async {
+    const pureColor = 'pure';
+    const bundled = 'bundled';
+    const gallery = 'gallery';
+
+    final current = theme.backgroundImage == null
+        ? pureColor
+        : (theme.backgroundImage == kBundledToken ? bundled : gallery);
+
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('背景'),
+        children: <Widget>[
+          RadioGroup<String>(
+            groupValue: current,
+            onChanged: (v) => Navigator.of(ctx).pop(v),
+            child: const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                RadioListTile<String>(
+                  value: pureColor,
+                  title: Text('纯色'),
+                  subtitle: Text('使用主题底色，不加载图片'),
+                ),
+                RadioListTile<String>(
+                  value: bundled,
+                  title: Text('内置背景图'),
+                  subtitle: Text('随应用打包的立绘背景'),
+                ),
+                RadioListTile<String>(
+                  value: gallery,
+                  title: Text('从相册选择'),
+                  subtitle: Text('复制到笔记库 theme/ 目录'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (picked == null || !mounted) return;
+
+    switch (picked) {
+      case pureColor:
+        await ref.read(appConfigProvider.notifier).setBackgroundImage(null);
+      case bundled:
+        await ref.read(appConfigProvider.notifier).setBackgroundImage(kBundledToken);
+      case gallery:
+        await _pickBackground();
+    }
+  }
+
   /// 选择深浅色模式（跟随系统 / 浅色 / 深色）。
   ///
   /// 用对话框而非 Switch：三态无法用布尔开关表达，
   /// 而「跟随系统」是最常用的默认值。
-  Future<void> _pickBrightness(ThemeConfig theme) async {
-    final picked = await showDialog<String>(
+  Future<void> _pickBrightness(ThemeConfig theme) async {    final picked = await showDialog<String>(
       context: context,
       // Flutter 3.32+ 起 RadioListTile 的 groupValue/onChanged 已弃用，
       // 改用 RadioGroup 祖先管理选中值。
