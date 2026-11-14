@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../net/mdns_service.dart';
 import '../net/net_service.dart';
+import '../net/pairing_actions.dart';
 import '../net/sync_service.dart';
 import '../theme/background_scaffold.dart';
 
@@ -91,35 +92,121 @@ class _DevicesPageState extends ConsumerState<DevicesPage> {
     );
   }
 
-  /// 连接流程：若本机已有密钥 → 直接 fast_auth 重连；
-  /// 否则弹输入框让用户输入对端的 6 位码。
+  /// 连接流程。
+  ///
+  /// ## 为什么不能只看 `hasMasterKey` 就决定走哪条路
+  ///
+  /// 早先的实现是：
+  /// ```dart
+  /// if (svc.hasMasterKey) { await svc.connectTo(peer); return; }  // 直接重连
+  /// // 只有没有密钥时才弹输入框
+  /// ```
+  /// 而 `main()` **首次启动就无条件生成 masterKey**，于是 `hasMasterKey`
+  /// 恒为 true —— **那个输入配对码的对话框永远不可达**，用户找不到任何
+  /// 输入配对码的地方，两台设备各用各的密钥握手，必然失败。
+  ///
+  /// 「本机有密钥」只意味着**本机可以当主机**，不意味着**本机不能加入别人**。
+  /// 因此这里改为：有密钥时让用户明确选择「重连」还是「输入对方配对码」。
   Future<void> _connectFlow(
     BuildContext context,
     DiscoveredPeer peer,
     SyncService svc,
   ) async {
-    if (svc.hasMasterKey) {
-      try {
-        await svc.connectTo(peer);
-      } catch (e) {
-        if (!context.mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('重连失败：$e')),
-        );
+    String? code;
+
+    // 决策规则抽到 pairing_actions.dart 里并有单测覆盖 ——
+    // 保证「输入配对码」这条路**永远存在**（这正是此前的 bug）。
+    final actions = connectActionsFor(hasMasterKey: svc.hasMasterKey);
+
+    if (actions.length > 1) {
+      // 本机已有密钥：两条路都给（重连 / 输入对方码）。
+      final action = await showDialog<String>(
+        context: context,
+        builder: (ctx) => SimpleDialog(
+          title: Text('连接到 ${peer.deviceName}'),
+          children: <Widget>[
+            SimpleDialogOption(
+              onPressed: () =>
+                  Navigator.of(ctx).pop(ConnectAction.reconnect.name),
+              child: const ListTile(
+                leading: Icon(Icons.link),
+                title: Text('重新连接'),
+                subtitle: Text('两台设备已配对过，直接建立连接'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            SimpleDialogOption(
+              onPressed: () =>
+                  Navigator.of(ctx).pop(ConnectAction.pairWithCode.name),
+              child: const ListTile(
+                leading: Icon(Icons.vpn_key),
+                title: Text('输入对方的配对码'),
+                subtitle: Text('首次与此设备配对，或改用对方的密钥'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+          ],
+        ),
+      );
+      if (action == null || !context.mounted) return;
+
+      if (action == ConnectAction.reconnect.name) {
+        try {
+          await svc.connectTo(peer);
+        } catch (e) {
+          if (!context.mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('重连失败：$e')),
+          );
+        }
+        return;
       }
-      return;
+
+      // 选择「输入配对码」：先输入，再确认密钥会被替换。
+      code = await _askCode(context, peer);
+      if (code == null || !context.mounted) return;
+
+      // 本机已有密钥 → 配对成功后本机密钥会被**对端的**密钥替换，
+      // 与其它设备的既有配对随之失效（笔记数据本身不受影响，
+      // 因为 masterKey 只用于传输加密）。这必须让用户明确确认。
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('替换本机密钥？'),
+          content: const Text(
+            '本机已有密钥。加入对方后，本机将改用对方的密钥，'
+            '与其它设备的既有配对会失效（需要重新配对）。\n\n'
+            '笔记数据本身不会丢失。',
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('继续配对'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !context.mounted) return;
+    } else {
+      // 本机没有密钥：唯一可用的动作就是输入对端的码。
+      // 用断言把「规则函数与 UI 分支一致」固化下来，避免将来又改歪。
+      assert(
+        actions.length == 1 && actions.first == ConnectAction.pairWithCode,
+        '无密钥时必须且只能走「输入配对码」',
+      );
+      code = await _askCode(context, peer);
+      if (code == null || !context.mounted) return;
     }
 
-    final code = await showDialog<String>(
-      context: context,
-      builder: (ctx) => const _CodeInputDialog(),
-    );
-    if (code == null) return;
     try {
       await svc.connectTo(peer, pairingCode: code);
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('配对成功，已开始同步')),
+        const SnackBar(content: Text('配对中…成功后会自动开始同步')),
       );
     } catch (e) {
       if (!context.mounted) return;
@@ -128,11 +215,22 @@ class _DevicesPageState extends ConsumerState<DevicesPage> {
       );
     }
   }
+
+  /// 弹出 6 位配对码输入框。
+  Future<String?> _askCode(BuildContext context, DiscoveredPeer peer) =>
+      showDialog<String>(
+        context: context,
+        builder: (ctx) => _CodeInputDialog(peerName: peer.deviceName),
+      );
 }
+
 
 /// 6 位配对码输入框。
 class _CodeInputDialog extends StatefulWidget {
-  const _CodeInputDialog();
+  const _CodeInputDialog({this.peerName});
+
+  /// 目标设备名（仅用于提示文案）。
+  final String? peerName;
 
   @override
   State<_CodeInputDialog> createState() => _CodeInputDialogState();
@@ -153,7 +251,12 @@ class _CodeInputDialogState extends State<_CodeInputDialog> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            const Text('请输入对端设备上显示的 6 位数字'),
+            Text(
+              widget.peerName == null
+                  ? '请输入对端设备上显示的 6 位数字'
+                  : '请输入「${widget.peerName}」上显示的 6 位数字',
+              textAlign: TextAlign.center,
+            ),
             const SizedBox(height: 14),
             TextField(
               controller: _c,
@@ -181,6 +284,15 @@ class _CodeInputDialogState extends State<_CodeInputDialog> {
                 }
                 if (digits.length == 6) Navigator.of(context).pop(digits);
               },
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '配对码在对方的「配对」页显示，每 30 秒自动更换。',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(context).colorScheme.outline,
+              ),
             ),
           ],
         ),

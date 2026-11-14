@@ -14,6 +14,7 @@ import '../net/sync_service.dart';
 import '../db/database.dart';
 import '../providers.dart';
 import '../theme/background_scaffold.dart';
+import 'devices_page.dart';
 import 'pairing_page.dart';
 
 /// 设置页：设备名、主题（背景图 / 透明度 / 颜色）、同步、图片 GC、重置配对。
@@ -164,9 +165,21 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ref.read(appConfigProvider.notifier).setSyncEnabled(v),
           ),
           ListTile(
+            leading: const Icon(Icons.devices_other),
+            title: const Text('设备与配对'),
+            subtitle: const Text('发现局域网设备、输入配对码连接'),
+            trailing: const Icon(Icons.chevron_right, size: 20),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const DevicesPage(),
+              ),
+            ),
+          ),
+          ListTile(
             leading: const Icon(Icons.qr_code_2),
-            title: const Text('配对与密钥'),
-            subtitle: const Text('显示配对码 / 重置配对'),
+            title: const Text('本机配对码'),
+            subtitle: const Text('显示本机配对码 / 重置配对'),
+            trailing: const Icon(Icons.chevron_right, size: 20),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
                 builder: (_) => const PairingPage(),
