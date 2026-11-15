@@ -191,4 +191,108 @@ void main() {
       expect(p2, p1);
     });
   });
+
+  // ── 真实双端配对（用户实际做的事：A 显示码，B 输入码）──────────────
+  //
+  // 前面的用例只证明「能连上」。用户报的是「连接后配对**必定失败**」，
+  // 所以这里要真的走完 `pair_request` → `pair_success` 全流程，
+  // 并断言 B 最终拿到了 A 的 masterKey。
+  group('真实双端配对全流程', () {
+    test('B 用 A 显示的配对码配对成功，并拿到 A 的 masterKey', () async {
+      final hostKey = Kdf.generateMasterKey();
+
+      // A：主机（显示配对码）。
+      server = await buildService(
+        deviceId: 'dev-host',
+        deviceName: '主机A',
+        masterKey: hostKey,
+      );
+      final port = await server.startServer();
+
+      // A 当前显示的 6 位配对码（与真机「本机配对码」页一致）。
+      final code = PairingHandshake.currentCode(hostKey);
+      expect(code, matches(RegExp(r'^[0-9]{6}$')));
+
+      // B：加入方（无密钥），走真实 WS 连接。
+      final joiner = await buildService(
+        deviceId: 'dev-join',
+        deviceName: '加入方B',
+        masterKey: null,
+      );
+      // 用同一个 tmpRoot 会冲突，这里单独建一个：
+      // buildService 内部已各自 createTempSync，故无需处理。
+
+      String? received;
+      joiner.onMasterKeyReceived = (mk) async => received = mk;
+
+      final peer = await joiner.connect(
+        host: '127.0.0.1',
+        port: port,
+        pairingCode: code,
+      );
+
+      // 等握手完成（pair_success 到达并回 auth_ok）。
+      await _waitUntil(() => received != null, timeout: const Duration(seconds: 15));
+
+      expect(received, hostKey,
+          reason: 'B 必须拿到 A 的 masterKey —— 这正是用户配不成功的那一步');
+      // 注：hasMasterKey 在 SyncService 上（NetService 只负责握手）。
+      // 这里断言 NetService 侧的等价信号：连接已认证。
+      expect(peer.isAuthenticated, isTrue,
+          reason: '配对成功后应切到会话密钥并进入 ready 阶段');
+
+      await peer.close();
+      await joiner.stopServer();
+    });
+
+    test('配对码错误 → 得到 pair_fail，且不会拿到密钥', () async {
+      final hostKey = Kdf.generateMasterKey();
+      server = await buildService(
+        deviceId: 'dev-host',
+        deviceName: '主机A',
+        masterKey: hostKey,
+      );
+      final port = await server.startServer();
+
+      final real = PairingHandshake.currentCode(hostKey);
+      // 构造一个必然不同的 6 位码。
+      final wrong = real == '000000' ? '111111' : '000000';
+
+      final joiner = await buildService(
+        deviceId: 'dev-join',
+        deviceName: '加入方B',
+        masterKey: null,
+      );
+      String? received;
+      joiner.onMasterKeyReceived = (mk) async => received = mk;
+
+      final peer = await joiner.connect(
+        host: '127.0.0.1',
+        port: port,
+        pairingCode: wrong,
+      );
+
+      // 等服务端拒绝并关闭连接。
+      await _waitUntil(() => peer.isClosed, timeout: const Duration(seconds: 15));
+
+      expect(received, isNull, reason: '错误配对码绝不能拿到密钥');
+      expect(peer.isClosed, isTrue, reason: '按协议失败后必须立即关闭连接');
+
+      await joiner.stopServer();
+    });
+  });
+}
+
+/// 轮询等待条件成立（避免用固定 sleep 造成测试不稳）。
+Future<void> _waitUntil(
+  bool Function() cond, {
+  required Duration timeout,
+  Duration step = const Duration(milliseconds: 50),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (cond()) return;
+    await Future<void>.delayed(step);
+  }
+  throw TimeoutException('等待条件超时（$timeout）');
 }
