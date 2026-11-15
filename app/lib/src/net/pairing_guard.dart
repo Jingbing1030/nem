@@ -73,4 +73,15 @@ class PairingGuard {
   /// 从 socket 取对端 IP。
   static String ipOf(Socket socket) =>
       socket.remoteAddress.address.isEmpty ? 'unknown' : socket.remoteAddress.address;
+
+  /// 从 [HttpRequest] 取对端 IP。
+  ///
+  /// 服务端改用 [HttpServer] 后不再拿得到裸 socket，改从连接的
+  /// `connectionInfo` 取（它是 HTTP 层暴露的底层连接信息）。
+  /// 取不到时返回 `'unknown'`，让限流仍然可工作（只是所有未知来源共用一个桶）。
+  static String ipOfRequest(HttpRequest request) {
+    final info = request.connectionInfo;
+    final addr = info?.remoteAddress.address;
+    return (addr == null || addr.isEmpty) ? 'unknown' : addr;
+  }
 }

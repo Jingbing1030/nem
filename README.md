@@ -594,6 +594,73 @@ CI   release APK: 2C:A8:21:5A:4F:6C:42:64:97:BB:FA:18:FC:B5:B3:DD:...  ← 与�
 
 ---
 
+### 7.9.2 连接后配对必定失败（2026-11-16）
+
+用户反馈：「连接后配对必定失败」。
+
+**根因：服务端从未完成 WebSocket 的 HTTP 升级握手。**
+
+WebSocket 连接以 HTTP Upgrade 开始 —— 客户端先发一个普通 HTTP 请求
+（带 `Upgrade: websocket`），服务端必须回 **`101 Switching Protocols`**，
+之后双方才在同一条 TCP 连接上转为 WebSocket 帧。
+
+而服务端实现是：
+
+```dart
+// ❌ 错误：裸 ServerSocket 收连接，却直接当成"已升级"
+final server = await ServerSocket.bind(InternetAddress.anyIPv4, 0);
+...
+final ws = WebSocket.fromUpgradedSocket(socket, serverSide: true);
+```
+
+`WebSocket.fromUpgradedSocket` **假定升级握手已经发生**。Dart SDK 文档原文：
+
+> Creates a WebSocket from an **already-upgraded** socket.
+> The initial WebSocket handshake **must have occurred prior to this call**.
+> A WebSocket client can automatically perform the handshake using
+> `WebSocket.connect`, while a **server can do so using `WebSocketTransformer.upgrade`**.
+
+裸 `ServerSocket` 从没回过 `101`，于是客户端的 `WebSocket.connect`
+**永远等不到升级响应而超时** —— 表现为「能发现设备、点连接、然后必定失败」。
+
+**实测对照**（同一台机器，仅改服务端实现方式）：
+
+```text
+裸 ServerSocket + fromUpgradedSocket → ✗ TimeoutException（连接超时）
+HttpServer + WebSocketTransformer    → ✓ 连接成功
+```
+
+**修复**：服务端改用 `HttpServer.bind()` + `WebSocketTransformer.upgrade(request)`，
+由它负责完整握手（校验 `Sec-WebSocket-Key`、回 `101`、协商子协议与压缩）。
+同时：
+
+- 非升级请求（浏览器误访问、端口探测）明确回 **400**，不留悬挂连接；
+- 升级失败只丢弃该连接，不影响整个服务；
+- 对端 IP 改从 `request.connectionInfo` 取（新增 `PairingGuard.ipOfRequest`），
+  限流逻辑不变。
+
+#### 为什么 366 个测试都没抓到这个 bug
+
+核心包（`packages/notepad_core`）的端到端测试用**内存传输**模拟两端，
+**从不经过 HTTP Upgrade** —— 密码学、协议、同步逻辑被测得很充分，
+但「两个真实 socket 能否握手成功」这一层完全没有覆盖。
+
+**补充的守门测试**：`app/test/ws_handshake_test.dart`（5 例），用真实
+`HttpServer` + `WebSocket.connect` 覆盖：
+
+| 用例 | 断言 |
+|---|---|
+| 服务端能被真正连上 | `WebSocket.connect` 成功（**这就是原 bug 的回归点**） |
+| 普通 HTTP 请求 | 得到 400，而非悬挂连接 |
+| 手工发升级请求 | 响应含 `101` + `Upgrade: websocket` + `Sec-WebSocket-Accept` |
+| stopServer 之后 | 端口不再接受连接 |
+| 重复 startServer | 返回同一端口（幂等） |
+
+**并且做了证伪**：临时把实现改回「不做真正的升级握手」，该测试会**失败**
+（`+0 -1`）—— 证明它是有效守门，而不是恒绿的摆设。
+
+---
+
 ### 7.10 深色模式、启动白闪、标题栏闪烁与图标资源
 
 #### 修复的第四、第五个问题：标题栏闪烁（2026-11-14）

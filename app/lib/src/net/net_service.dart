@@ -38,7 +38,11 @@ class NetService {
 
   final SyncEngine engine;
 
-  ServerSocket? _server;
+  /// HTTP 服务端。
+  ///
+  /// 用 [HttpServer] 而非裸 [ServerSocket]，因为 WebSocket 必须先完成
+  /// HTTP Upgrade 握手（见 [startServer] 的说明）。
+  HttpServer? _server;
   final List<PeerSession> _sessions = <PeerSession>[];
   final PairingGuard _guard = PairingGuard();
 
@@ -81,12 +85,35 @@ class NetService {
   // ------------------------------------------------------------ 服务端
 
   /// 启动服务端，端口动态分配（需求 5.6：避免固定端口冲突）。
+  ///
+  /// ## 为什么用 [HttpServer] 而不是裸 [ServerSocket]
+  ///
+  /// WebSocket 连接以 **HTTP Upgrade** 开始：客户端先发一个普通 HTTP 请求
+  /// （带 `Upgrade: websocket`），服务端必须回 `101 Switching Protocols`
+  /// 之后双方才在**同一条 TCP 连接**上转为 WebSocket 帧。
+  ///
+  /// 早先的实现用裸 `ServerSocket.bind()` 收连接，然后直接
+  /// `WebSocket.fromUpgradedSocket(socket, serverSide: true)` —— 但这个方法
+  /// **假定升级握手已经完成**（见 Dart SDK 文档：
+  /// "The initial WebSocket handshake must have occurred prior to this call"）。
+  /// 裸 socket 从没回过 `101`，于是客户端 `WebSocket.connect` 一直等不到
+  /// 升级响应而超时 —— **表现为「连接后配对必定失败」**。
+  ///
+  /// 实测对照（同一台机器、同一端口分配方式）：
+  /// ```text
+  /// 裸 ServerSocket + fromUpgradedSocket → ✗ 连接超时（TimeoutException）
+  /// HttpServer + WebSocketTransformer    → ✓ 连接成功
+  /// ```
+  ///
+  /// 正确做法是 [WebSocketTransformer.upgrade]：它负责完整的握手
+  /// （校验 `Sec-WebSocket-Key`、回 `101`、协商子协议/压缩）。
   Future<int> startServer() async {
     if (_server != null) return port;
-    final server = await ServerSocket.bind(InternetAddress.anyIPv4, 0);
+    // 绑定 0 → 由系统分配空闲端口（需求 5.6）。
+    final server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
     _server = server;
     _setState(NetState.listening);
-    server.listen(_onSocket, onError: (Object e) {
+    server.listen(_onRequest, onError: (Object e) {
       Log.error('服务端 socket 错误', e);
     });
     Log.debug('WS 服务端监听 0.0.0.0:${server.port}');
@@ -98,16 +125,37 @@ class NetService {
       await s.close('服务端关闭');
     }
     _sessions.clear();
-    await _server?.close();
+    await _server?.close(force: true);
     _server = null;
     _setState(NetState.stopped);
   }
 
-  void _onSocket(Socket socket) {
-    final ip = PairingGuard.ipOf(socket);
+  /// 处理一条进来的 HTTP 请求：只有合法的 WebSocket 升级才接受。
+  Future<void> _onRequest(HttpRequest request) async {
+    final ip = PairingGuard.ipOfRequest(request);
+
+    if (!WebSocketTransformer.isUpgradeRequest(request)) {
+      // 普通 HTTP 请求（例如浏览器误访问、或端口探测）：
+      // 礼貌地回 400 并说明这不是 HTTP 服务，避免留下悬挂连接。
+      Log.debug('非 WebSocket 升级请求，来自 $ip：${request.uri}');
+      request.response
+        ..statusCode = HttpStatus.badRequest
+        ..write('This endpoint only accepts WebSocket connections.')
+        ..close();
+      return;
+    }
+
     Log.debug('收到来自 $ip 的连接');
 
-    final ws = WebSocket.fromUpgradedSocket(socket, serverSide: true);
+    WebSocket ws;
+    try {
+      ws = await WebSocketTransformer.upgrade(request);
+    } catch (e) {
+      // 升级失败（畸形握手等）：不断整个服务，只丢弃这条连接。
+      Log.error('WebSocket 升级失败（$ip）', e);
+      return;
+    }
+
     final peer = PeerSession(
       socket: ws,
       remoteLabel: ip,
